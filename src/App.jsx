@@ -3,7 +3,7 @@ import { drawCanvas, hitTest, seatHitTest } from './canvasRenderer';
 import {
   createTable, createChairBlock, createVenueElement,
   getTableTotalSeats, getBlockTotalSeats, getTotalSeats,
-  getBlockDimensions, buildAssignedSet, parseCSV, formatName,
+  getBlockDimensions, buildAssignedSet, parseCSV, formatName, displayName,
   serializeProject, deserializeProject, exportCSV,
   TABLE_COLORS, VENUE_DEFAULTS, COLOR_PALETTE,
 } from './models';
@@ -30,6 +30,7 @@ export default function App() {
   const [gridSize, setGridSize] = useState(1);
   const [hideGrid, setHideGrid] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
+  const [nameOrder, setNameOrder] = useState('last-first'); // 'last-first' or 'first-last'
   const [zoomLevel, setZoomLevel] = useState(100);
   const [panelOpen, setPanelOpen] = useState(true);
   const [search, setSearch] = useState('');
@@ -76,14 +77,16 @@ export default function App() {
   // Assigned set
   const assigned = useMemo(() => buildAssignedSet(tables, chairBlocks), [tables, chairBlocks]);
 
+  const firstFirst = nameOrder === 'first-last';
+
   // Canvas state for renderer
   const canvasState = useMemo(() => ({
     roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees,
     selectedItem, selectedItems, ghostEntity, ghostType,
-    showPlacement, gridSize, hideGrid, scale, offsetX, offsetY,
+    showPlacement, gridSize, hideGrid, firstFirst, scale, offsetX, offsetY,
   }), [roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees,
     selectedItem, selectedItems, ghostEntity, ghostType,
-    showPlacement, gridSize, hideGrid, scale, offsetX, offsetY]);
+    showPlacement, gridSize, hideGrid, firstFirst, scale, offsetX, offsetY]);
 
   // Save undo
   const saveUndo = useCallback(() => {
@@ -300,7 +303,10 @@ export default function App() {
     const unassigned = attendees.map((_, i) => i).filter(i => !assigned.has(i) && !disabledAttendees.has(i));
     if (!unassigned.length) { setStatus('No unassigned attendees'); return; }
 
-    if (mode === 'alpha') unassigned.sort((a, b) => attendees[a][0].localeCompare(attendees[b][0]) || attendees[a][1].localeCompare(attendees[b][1]));
+    if (mode === 'alpha') {
+      const [p, s] = firstFirst ? [1, 0] : [0, 1];
+      unassigned.sort((a, b) => attendees[a][p].localeCompare(attendees[b][p]) || attendees[a][s].localeCompare(attendees[b][s]));
+    }
     else if (mode === 'random') unassigned.sort(() => Math.random() - 0.5);
 
     const emptySeats = [];
@@ -464,7 +470,7 @@ export default function App() {
         selectedItem: null, selectedItems: [],
         ghostEntity: null, ghostType: null,
         showPlacement: includeNames, gridSize,
-        hideGrid: !includeGrid,
+        hideGrid: !includeGrid, firstFirst,
         scale: pxPerFt, offsetX: padding, offsetY: padding,
       };
       drawCanvas(ctx, exportState, totalW, showCanvas ? roomH + padding * 2 : 0);
@@ -570,7 +576,7 @@ export default function App() {
             if (occ && attIdx != null && attIdx < attendees.length) {
               ctx.fillStyle = '#e8e8e8';
               ctx.font = `${Math.round(12 * fontScale)}px "DM Sans", sans-serif`;
-              ctx.fillText(`${attendees[attIdx][0]}, ${attendees[attIdx][1]}`, colX + Math.round(32 * fontScale), seatY + lineH / 2);
+              ctx.fillText(displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst), colX + Math.round(32 * fontScale), seatY + lineH / 2);
             } else {
               ctx.fillStyle = '#4a5568';
               ctx.font = `italic ${Math.round(11 * fontScale)}px "DM Sans", sans-serif`;
@@ -813,9 +819,12 @@ export default function App() {
   function confirmAddAttendee(params) {
     if (params.first || params.last) {
       const newList = [...attendees, [params.last, params.first]];
-      newList.sort((a, b) => a[0].toLowerCase().localeCompare(b[0].toLowerCase()) || a[1].toLowerCase().localeCompare(b[1].toLowerCase()));
+      newList.sort((a, b) => {
+        const [p1, s1] = firstFirst ? [1, 0] : [0, 1];
+        return a[p1].toLowerCase().localeCompare(b[p1].toLowerCase()) || a[s1].toLowerCase().localeCompare(b[s1].toLowerCase());
+      });
       setAttendees(newList);
-      setStatus(`Added: ${params.last}, ${params.first}`);
+      setStatus(`Added: ${displayName(params.last, params.first, firstFirst)}`);
     }
     setModal(null);
   }
@@ -824,7 +833,7 @@ export default function App() {
     const newDisabled = new Set(disabledAttendees);
     if (newDisabled.has(attIdx)) {
       newDisabled.delete(attIdx);
-      setStatus(`Enabled: ${attendees[attIdx][0]}, ${attendees[attIdx][1]}`);
+      setStatus(`Enabled: ${displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst)}`);
     } else {
       // Remove from assignments first
       setTables(prev => prev.map(t => {
@@ -838,7 +847,7 @@ export default function App() {
         return { ...b, assignments: newA };
       }));
       newDisabled.add(attIdx);
-      setStatus(`Disabled: ${attendees[attIdx][0]}, ${attendees[attIdx][1]}`);
+      setStatus(`Disabled: ${displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst)}`);
     }
     setDisabledAttendees(newDisabled);
   }
@@ -858,7 +867,7 @@ export default function App() {
         return { ...b, assignments: newA };
       }));
     }
-    setStatus(found ? `Recalled: ${attendees[attIdx][0]}, ${attendees[attIdx][1]}` : 'Not seated');
+    setStatus(found ? `Recalled: ${displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst)}` : 'Not seated');
   }
 
   // Assign attendee to seat (from list view click or canvas drop)
@@ -1186,6 +1195,9 @@ export default function App() {
     const term = search.toLowerCase();
     let list = attendees.map((a, i) => ({ last: a[0], first: a[1], idx: i }))
       .filter(a => !term || `${a.last} ${a.first}`.toLowerCase().includes(term));
+    // Sort by display name order
+    const [pk, sk] = firstFirst ? ['first', 'last'] : ['last', 'first'];
+    list.sort((a, b) => a[pk].toLowerCase().localeCompare(b[pk].toLowerCase()) || a[sk].toLowerCase().localeCompare(b[sk].toLowerCase()));
     if (attendeeListMode === 'unassigned-first') {
       list.sort((a, b) => {
         const aActive = !assigned.has(a.idx) && !disabledAttendees.has(a.idx);
@@ -1195,7 +1207,7 @@ export default function App() {
       });
     }
     return list;
-  }, [attendees, search, attendeeListMode, assigned, disabledAttendees]);
+  }, [attendees, search, attendeeListMode, assigned, disabledAttendees, firstFirst]);
 
   // === RENDER ===
   return (
@@ -1203,12 +1215,12 @@ export default function App() {
       {/* Global drag ghost */}
       {dragAttendee !== null && dragGhostPos && (
         <div className="drag-ghost" style={{ left: dragGhostPos?.x, top: dragGhostPos?.y }}>
-          {attendees[dragAttendee][0]}, {attendees[dragAttendee][1]}
+          {displayName(attendees[dragAttendee][0], attendees[dragAttendee][1], firstFirst)}
         </div>
       )}
       {popupDragSeat && dragGhostPos && (
         <div className="drag-ghost" style={{ left: dragGhostPos?.x, top: dragGhostPos?.y }}>
-          {attendees[popupDragSeat.attIdx]?.[0]}, {attendees[popupDragSeat.attIdx]?.[1]}
+          {displayName(attendees[popupDragSeat.attIdx]?.[0], attendees[popupDragSeat.attIdx]?.[1], firstFirst)}
         </div>
       )}
 
@@ -1244,7 +1256,7 @@ export default function App() {
         <div className="topbar-section" style={{ position: 'relative' }}>
           <button className="btn btn-sm" onClick={() => setMenuOpen(menuOpen === 'settings' ? null : 'settings')}>Settings ▾</button>
           {menuOpen === 'settings' && (
-            <div className="menu-dropdown">
+            <div className="menu-dropdown" onClick={e => e.stopPropagation()}>
               <label className="menu-toggle">
                 <input type="checkbox" checked={showPlacement} onChange={e => setShowPlacement(e.target.checked)} />
                 Show Names
@@ -1256,6 +1268,11 @@ export default function App() {
               <label className="menu-toggle">
                 <input type="checkbox" checked={snapEnabled} onChange={e => setSnapEnabled(e.target.checked)} />
                 Snap to Grid
+              </label>
+              <div className="menu-divider" />
+              <label className="menu-toggle">
+                <input type="checkbox" checked={firstFirst} onChange={e => setNameOrder(e.target.checked ? 'first-last' : 'last-first')} />
+                First Name First
               </label>
             </div>
           )}
@@ -1397,7 +1414,7 @@ export default function App() {
                         }}
                         onDragStart={e => e.preventDefault()}
                         title={isAssigned ? 'Assigned' : isDisabled ? 'Disabled' : 'Click to select, drag to seat'}>
-                        {a.last}, {a.first}
+                        {displayName(a.last, a.first, firstFirst)}
                       </div>
                     );
                   })}
@@ -1483,6 +1500,7 @@ export default function App() {
                     setDragGhostPos(null);
                   }
                 }}
+                firstFirst={firstFirst}
               />
             )}
           </div>
@@ -1521,6 +1539,7 @@ export default function App() {
             }}
             onSelect={(type, entity) => { setSelectedItem([type, entity]); setSelectedItems([]); }}
             selectedItem={selectedItem}
+            firstFirst={firstFirst}
           />
         )}
       </div>
@@ -1539,7 +1558,7 @@ export default function App() {
 
 // === TABLE POPUP ===
 function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned, dragAttendee, popupDragSeat,
-  onClose, onUnassign, onRename, onSeatDragStart, onSeatDrop, onDropNextAvailable }) {
+  onClose, onUnassign, onRename, onSeatDragStart, onSeatDrop, onDropNextAvailable, firstFirst }) {
   const [dragOverSeat, setDragOverSeat] = useState(null);
   const [dragOverHeader, setDragOverHeader] = useState(false);
   const [editingName, setEditingName] = useState(false);
@@ -1628,7 +1647,7 @@ function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned
                   <span className="seat-name"
                     onMouseDown={e => { if (e.button === 0) onSeatDragStart(key, attIdx, e); }}
                     title="Drag to reorder or move to another table">
-                    {att[0]}, {att[1]}
+                    {displayName(att[0], att[1], firstFirst)}
                   </span>
                   <button className="seat-remove" onClick={() => onUnassign(key)} title="Remove from seat">✕</button>
                 </>
@@ -1646,7 +1665,7 @@ function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned
 }
 
 // === LIST VIEW ===
-function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees, selectedAttendee, search, collapsedCards, onSearchChange, onToggleCollapse, onExpandAll, onCollapseAll, onAssign, onUnassign, onRename, onChangeColor, onDelete, dragAttendee, onDropNextAvailable, onSelect, selectedItem }) {
+function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees, selectedAttendee, search, collapsedCards, onSearchChange, onToggleCollapse, onExpandAll, onCollapseAll, onAssign, onUnassign, onRename, onChangeColor, onDelete, dragAttendee, onDropNextAvailable, onSelect, selectedItem, firstFirst }) {
   const totalSeats = tables.reduce((s, t) => s + getTableTotalSeats(t), 0) + chairBlocks.reduce((s, b) => s + getBlockTotalSeats(b), 0);
   const totalAssigned = assigned.size;
   const unassigned = attendees.length - totalAssigned;
@@ -1674,7 +1693,7 @@ function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees,
             onAssign={onAssign} onUnassign={onUnassign}
             onRename={onRename} onChangeColor={onChangeColor} onDelete={onDelete}
             dragAttendee={dragAttendee} onDropNextAvailable={onDropNextAvailable}
-            onSelect={onSelect} isSelected={selectedItem?.[0] === 'table' && selectedItem?.[1]?.id === t.id} />
+            onSelect={onSelect} isSelected={selectedItem?.[0] === 'table' && selectedItem?.[1]?.id === t.id} firstFirst={firstFirst} />
         ))}
         {chairBlocks.filter(b => !term || (b.name || `Block ${b.id}`).toLowerCase().includes(term)).map(b => (
           <EntityCard key={`b${b.id}`} entity={b} entityType="block" attendees={attendees}
@@ -1684,7 +1703,7 @@ function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees,
             onAssign={onAssign} onUnassign={onUnassign}
             onRename={onRename} onChangeColor={onChangeColor} onDelete={onDelete}
             dragAttendee={dragAttendee} onDropNextAvailable={onDropNextAvailable}
-            onSelect={onSelect} isSelected={selectedItem?.[0] === 'block' && selectedItem?.[1]?.id === b.id} />
+            onSelect={onSelect} isSelected={selectedItem?.[0] === 'block' && selectedItem?.[1]?.id === b.id} firstFirst={firstFirst} />
         ))}
       </div>
       {!tables.length && !chairBlocks.length && (
@@ -1696,7 +1715,7 @@ function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees,
   );
 }
 
-function EntityCard({ entity, entityType, attendees, collapsed, onToggle, selectedAttendee, assigned, disabledAttendees, onAssign, onUnassign, onRename, onChangeColor, onDelete, dragAttendee, onDropNextAvailable, onSelect, isSelected }) {
+function EntityCard({ entity, entityType, attendees, collapsed, onToggle, selectedAttendee, assigned, disabledAttendees, onAssign, onUnassign, onRename, onChangeColor, onDelete, dragAttendee, onDropNextAvailable, onSelect, isSelected, firstFirst }) {
   const total = getTotalSeats(entity);
   const filled = Object.keys(entity.assignments).length;
   const defaultName = `${entityType === 'table' ? 'Table' : 'Block'} ${entity.id}`;
@@ -1771,7 +1790,7 @@ function EntityCard({ entity, entityType, attendees, collapsed, onToggle, select
                 attendees={attendees} selectedAttendee={selectedAttendee}
                 assigned={assigned} disabledAttendees={disabledAttendees}
                 onAssign={onAssign} onUnassign={onUnassign}
-                dragAttendee={dragAttendee} />
+                dragAttendee={dragAttendee} firstFirst={firstFirst} />
             ))
           ) : (
             Array.from({ length: entity.rows }, (_, r) => (
@@ -1789,8 +1808,8 @@ function EntityCard({ entity, entityType, attendees, collapsed, onToggle, select
                         else if (selectedAttendee != null && !assigned.has(selectedAttendee) && !disabledAttendees.has(selectedAttendee))
                           onAssign(entityType, entity.id, key, selectedAttendee);
                       }}
-                      title={occ && attIdx < attendees.length ? `${attendees[attIdx][0]}, ${attendees[attIdx][1]}` : 'Empty — select an attendee and click'}>
-                      {occ && attIdx < attendees.length ? formatName(attendees[attIdx][1], attendees[attIdx][0], 'initials') : '—'}
+                      title={occ && attIdx < attendees.length ? displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst) : 'Empty — select an attendee and click'}>
+                      {occ && attIdx < attendees.length ? formatName(attendees[attIdx][1], attendees[attIdx][0], 'initials', firstFirst) : '—'}
                     </span>
                   );
                 })}
@@ -1804,10 +1823,10 @@ function EntityCard({ entity, entityType, attendees, collapsed, onToggle, select
   );
 }
 
-function SeatRow({ seatIdx, seatKey, entity, entityType, attendees, selectedAttendee, assigned, disabledAttendees, onAssign, onUnassign, dragAttendee }) {
+function SeatRow({ seatIdx, seatKey, entity, entityType, attendees, selectedAttendee, assigned, disabledAttendees, onAssign, onUnassign, dragAttendee, firstFirst }) {
   const occ = seatKey in entity.assignments;
   const attIdx = occ ? entity.assignments[seatKey] : null;
-  const name = occ && attIdx < attendees.length ? `${attendees[attIdx][0]}, ${attendees[attIdx][1]}` : null;
+  const name = occ && attIdx < attendees.length ? displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst) : null;
   const [isDragOver, setIsDragOver] = useState(false);
 
   return (

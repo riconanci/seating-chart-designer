@@ -92,14 +92,26 @@ export const VENUE_DEFAULTS = {
   buffet: { name: 'Buffet', widthFt: 16, heightFt: 3, color: '#E74C3C' },
 };
 
-export function formatName(first, last, mode = 'short') {
+export function formatName(first, last, mode = 'short', firstFirst = false) {
   if (mode === 'initials') {
-    return (first?.[0] || '') + (last?.[0] || '');
+    return firstFirst ? (first?.[0] || '') + (last?.[0] || '') : (last?.[0] || '') + (first?.[0] || '');
   }
-  if (mode === 'full') return `${last}, ${first}`;
+  if (mode === 'full') return firstFirst ? `${first}, ${last}` : `${last}, ${first}`;
   // short
-  if (last && first) return `${last.substring(0, 6)},${first[0]}`;
+  if (last && first) {
+    return firstFirst
+      ? `${first.substring(0, 6)}, ${last[0]}`
+      : `${last.substring(0, 6)}, ${first[0]}`;
+  }
   return last || first || '?';
+}
+
+// Display full name (for lists, tooltips, status)
+export function displayName(last, first, firstFirst = false) {
+  if (!last && !first) return '?';
+  if (!last) return first;
+  if (!first) return last;
+  return firstFirst ? `${first}, ${last}` : `${last}, ${first}`;
 }
 
 // Build assigned set

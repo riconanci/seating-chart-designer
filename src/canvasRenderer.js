@@ -56,7 +56,7 @@ function isLightColor(hex) {
 export function drawCanvas(ctx, state, canvasW, canvasH) {
   const { roomWidth, roomHeight, tables, chairBlocks, venueElements,
     attendees, selectedItem, selectedItems, ghostEntity, ghostType,
-    showPlacement, gridSize, hideGrid, scale, offsetX, offsetY } = state;
+    showPlacement, gridSize, hideGrid, firstFirst, scale, offsetX, offsetY } = state;
 
   ctx.clearRect(0, 0, canvasW, canvasH);
 
@@ -113,7 +113,7 @@ function isSelected(entity, state) {
 }
 
 function drawTable(ctx, t, state) {
-  const { scale, offsetX, offsetY, attendees, showPlacement } = state;
+  const { scale, offsetX, offsetY, attendees, showPlacement, firstFirst } = state;
   const cx = offsetX + t.x * scale;
   const cy = offsetY + t.y * scale;
   const sel = isSelected(t, state);
@@ -151,10 +151,10 @@ function drawTable(ctx, t, state) {
       if (occ && showPlacement && t.assignments[i] < attendees.length) {
         const [last, first] = attendees[t.assignments[i]];
         ctx.fillStyle = '#fff';
-        ctx.font = `${Math.max(8, sr * 0.55)}px "DM Sans", sans-serif`;
+        ctx.font = `${Math.max(8, sr * 0.65)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(formatName(first, last), sx, sy);
+        ctx.fillText(formatName(first, last, 'short', firstFirst), sx, sy);
       } else if (i === 0 && !occ) {
         ctx.fillStyle = '#aaa';
         ctx.font = `bold ${Math.max(8, sr * 0.7)}px "DM Sans", sans-serif`;
@@ -194,10 +194,10 @@ function drawTable(ctx, t, state) {
       if (occ && showPlacement && t.assignments[i] < attendees.length) {
         const [last, first] = attendees[t.assignments[i]];
         ctx.fillStyle = '#fff';
-        ctx.font = `${Math.max(8, sr * 0.55)}px "DM Sans", sans-serif`;
+        ctx.font = `${Math.max(8, sr * 0.65)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(formatName(first, last), sx, sy);
+        ctx.fillText(formatName(first, last, 'short', firstFirst), sx, sy);
       } else if (i === 0 && !occ) {
         ctx.fillStyle = '#aaa';
         ctx.font = `bold ${Math.max(8, sr * 0.7)}px "DM Sans", sans-serif`;
@@ -225,7 +225,7 @@ function drawTable(ctx, t, state) {
 }
 
 function drawBlock(ctx, b, state) {
-  const { scale, offsetX, offsetY, attendees, showPlacement } = state;
+  const { scale, offsetX, offsetY, attendees, showPlacement, firstFirst } = state;
   const dims = getBlockDimensions(b);
   const x = offsetX + b.x * scale;
   const y = offsetY + b.y * scale;
@@ -271,7 +271,7 @@ function drawBlock(ctx, b, state) {
         ctx.font = `${Math.max(7, chairSize * 0.4)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(formatName(first, last, 'initials'), cx, cy);
+        ctx.fillText(formatName(first, last, 'initials', firstFirst), cx, cy);
       }
     }
   }
