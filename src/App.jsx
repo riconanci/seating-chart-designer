@@ -1,12 +1,14 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { drawCanvas, hitTest, seatHitTest } from './canvasRenderer';
+import { drawCanvas, hitTest, seatHitTest, resizeHandleHitTest } from './canvasRenderer';
 import {
   createTable, createChairBlock, createVenueElement,
   getTableTotalSeats, getBlockTotalSeats, getTotalSeats,
-  getBlockDimensions, buildAssignedSet, parseCSV, formatName, displayName,
+  getBlockDimensions, buildAssignedSet, parseCSV, formatName,
   serializeProject, deserializeProject, exportCSV,
   TABLE_COLORS, VENUE_DEFAULTS, COLOR_PALETTE,
 } from './models';
+
+const AUTOSAVE_KEY = 'seating-chart-autosave';
 
 export default function App() {
   // Core state
@@ -30,7 +32,6 @@ export default function App() {
   const [gridSize, setGridSize] = useState(1);
   const [hideGrid, setHideGrid] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
-  const [nameOrder, setNameOrder] = useState('last-first'); // 'last-first' or 'first-last'
   const [zoomLevel, setZoomLevel] = useState(100);
   const [panelOpen, setPanelOpen] = useState(true);
   const [search, setSearch] = useState('');
@@ -43,8 +44,13 @@ export default function App() {
   const [ghostEntity, setGhostEntity] = useState(null);
   const [ghostType, setGhostType] = useState(null);
   const [tablePopupOpen, setTablePopupOpen] = useState(true);
-  const [popupDragSeat, setPopupDragSeat] = useState(null); // {entityType, entityId, seatKey, attIdx}
-  const [attendeeListMode, setAttendeeListMode] = useState('all'); // 'all' | 'unassigned-first'
+  const [popupDragSeat, setPopupDragSeat] = useState(null);
+  const [attendeeListMode, setAttendeeListMode] = useState('all');
+  const [nameOrder, setNameOrder] = useState('lastFirst');
+  const [smartGuidesEnabled, setSmartGuidesEnabled] = useState(true);
+  const [smartGuides, setSmartGuides] = useState([]);
+  const [resizeCursor, setResizeCursor] = useState(null);
+  const [showSeatNumbers, setShowSeatNumbers] = useState(false);
 
   // Drag state
   const [dragging, setDragging] = useState(false);
@@ -52,8 +58,17 @@ export default function App() {
   const [dragAttendee, setDragAttendee] = useState(null);
   const [dragGhostPos, setDragGhostPos] = useState(null);
 
-  // Undo
+  // Pan state
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const panRef = useRef({ active: false, startX: 0, startY: 0, origPanX: 0, origPanY: 0, hasMoved: false });
+
+  // Resize state (venue elements)
+  const resizeRef = useRef(null); // { entity, corner, anchorX, anchorY, origW, origH, origCx, origCy }
+
+  // Undo / Redo
   const undoStack = useRef([]);
+  const redoStack = useRef([]);
 
   // Canvas refs
   const canvasRef = useRef(null);
@@ -61,6 +76,7 @@ export default function App() {
   const [canvasSize, setCanvasSize] = useState({ w: 800, h: 600 });
   const fileInputRef = useRef(null);
   const csvInputRef = useRef(null);
+  const zoomParamsRef = useRef({});
 
   // Compute scale
   const scale = useMemo(() => {
@@ -71,31 +87,39 @@ export default function App() {
     return zoomLevel === 100 ? base : base * zoomLevel / 100;
   }, [canvasSize, roomWidth, roomHeight, zoomLevel]);
 
-  const offsetX = useMemo(() => (canvasSize.w - roomWidth * scale) / 2, [canvasSize.w, roomWidth, scale]);
-  const offsetY = useMemo(() => (canvasSize.h - roomHeight * scale) / 2, [canvasSize.h, roomHeight, scale]);
+  const offsetX = useMemo(() => (canvasSize.w - roomWidth * scale) / 2 + panX, [canvasSize.w, roomWidth, scale, panX]);
+  const offsetY = useMemo(() => (canvasSize.h - roomHeight * scale) / 2 + panY, [canvasSize.h, roomHeight, scale, panY]);
 
   // Assigned set
   const assigned = useMemo(() => buildAssignedSet(tables, chairBlocks), [tables, chairBlocks]);
 
-  const firstFirst = nameOrder === 'first-last';
+  // Display name helper — respects nameOrder setting
+  // att is [lastName, firstName]
+  const dn = useCallback((att) => {
+    return nameOrder === 'firstLast' ? `${att[1]}, ${att[0]}` : `${att[0]}, ${att[1]}`;
+  }, [nameOrder]);
 
   // Canvas state for renderer
   const canvasState = useMemo(() => ({
     roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees,
     selectedItem, selectedItems, ghostEntity, ghostType,
-    showPlacement, gridSize, hideGrid, firstFirst, scale, offsetX, offsetY,
+    showPlacement, gridSize, hideGrid, scale, offsetX, offsetY, nameOrder, smartGuides, showSeatNumbers,
   }), [roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees,
     selectedItem, selectedItems, ghostEntity, ghostType,
-    showPlacement, gridSize, hideGrid, firstFirst, scale, offsetX, offsetY]);
+    showPlacement, gridSize, hideGrid, scale, offsetX, offsetY, nameOrder, smartGuides, showSeatNumbers]);
 
-  // Save undo
+  // Save undo (clears redo stack on new action)
   const saveUndo = useCallback(() => {
     undoStack.current.push(JSON.stringify({ tables, chairBlocks, venueElements, attendees: attendees.slice(), disabledAttendees: [...disabledAttendees] }));
     if (undoStack.current.length > 50) undoStack.current.shift();
+    redoStack.current = [];
   }, [tables, chairBlocks, venueElements, attendees, disabledAttendees]);
 
+  // Undo — pushes current state onto redo stack
   const undo = useCallback(() => {
     if (!undoStack.current.length) return;
+    redoStack.current.push(JSON.stringify({ tables, chairBlocks, venueElements, attendees: attendees.slice(), disabledAttendees: [...disabledAttendees] }));
+    if (redoStack.current.length > 50) redoStack.current.shift();
     const prev = JSON.parse(undoStack.current.pop());
     setTables(prev.tables.map(t => ({ ...t, type: 'table' })));
     setChairBlocks(prev.chairBlocks.map(b => ({ ...b, type: 'block' })));
@@ -103,7 +127,21 @@ export default function App() {
     setAttendees(prev.attendees);
     setDisabledAttendees(new Set(prev.disabledAttendees));
     setStatus('Undone');
-  }, []);
+  }, [tables, chairBlocks, venueElements, attendees, disabledAttendees]);
+
+  // Redo — pushes current state onto undo stack
+  const redo = useCallback(() => {
+    if (!redoStack.current.length) return;
+    undoStack.current.push(JSON.stringify({ tables, chairBlocks, venueElements, attendees: attendees.slice(), disabledAttendees: [...disabledAttendees] }));
+    if (undoStack.current.length > 50) undoStack.current.shift();
+    const next = JSON.parse(redoStack.current.pop());
+    setTables(next.tables.map(t => ({ ...t, type: 'table' })));
+    setChairBlocks(next.chairBlocks.map(b => ({ ...b, type: 'block' })));
+    setVenueElements(next.venueElements.map(e => ({ ...e, type: 'venue' })));
+    setAttendees(next.attendees);
+    setDisabledAttendees(new Set(next.disabledAttendees));
+    setStatus('Redone');
+  }, [tables, chairBlocks, venueElements, attendees, disabledAttendees]);
 
   // Snap to grid
   const snap = useCallback((v) => snapEnabled && gridSize > 0 ? Math.round(v / gridSize) * gridSize : v, [gridSize, snapEnabled]);
@@ -113,14 +151,11 @@ export default function App() {
     if (!snapEnabled || gridSize <= 0) return { x: rawX, y: rawY };
     const isRound = eType === 'table' && entity.tableType === 'round';
     if (isRound) {
-      // Round tables: snap center to grid
       return { x: snap(rawX), y: snap(rawY) };
     }
     if (eType === 'block') {
-      // Blocks: x,y is already top-left, snap directly
       return { x: snap(rawX), y: snap(rawY) };
     }
-    // Rect tables and venue elements: x,y is center, snap top-left corner
     const w = entity.widthFt;
     const h = entity.heightFt;
     const tlx = snap(rawX - w / 2);
@@ -128,6 +163,71 @@ export default function App() {
     return { x: tlx + w / 2, y: tly + h / 2 };
   }, [gridSize, snapEnabled, snap]);
   const pxToFt = useCallback((px) => px / scale, [scale]);
+
+  // Smart guides — compute alignment lines during drag
+  function getEntityBounds(entity) {
+    if (entity.type === 'table') {
+      const w = entity.widthFt, h = entity.heightFt;
+      return { cx: entity.x, cy: entity.y, left: entity.x - w / 2, right: entity.x + w / 2, top: entity.y - h / 2, bottom: entity.y + h / 2 };
+    } else if (entity.type === 'block') {
+      const dims = getBlockDimensions(entity);
+      return { cx: entity.x + dims.widthFt / 2, cy: entity.y + dims.heightFt / 2, left: entity.x, right: entity.x + dims.widthFt, top: entity.y, bottom: entity.y + dims.heightFt };
+    } else {
+      return { cx: entity.x, cy: entity.y, left: entity.x - entity.widthFt / 2, right: entity.x + entity.widthFt / 2, top: entity.y - entity.heightFt / 2, bottom: entity.y + entity.heightFt / 2 };
+    }
+  }
+
+  function computeSmartGuides(draggedIds) {
+    const threshold = 0.5; // ft
+    const guides = [];
+    const dragged = [];
+    const others = [];
+    const idSet = new Set(draggedIds.map(d => `${d.type}-${d.id}`));
+
+    // Collect all entities, split into dragged vs others
+    for (const t of tables) {
+      const b = getEntityBounds(t);
+      if (idSet.has(`table-${t.id}`)) dragged.push(b); else others.push(b);
+    }
+    for (const bl of chairBlocks) {
+      const b = getEntityBounds(bl);
+      if (idSet.has(`block-${bl.id}`)) dragged.push(b); else others.push(b);
+    }
+    for (const v of venueElements) {
+      const b = getEntityBounds(v);
+      if (idSet.has(`venue-${v.id}`)) dragged.push(b); else others.push(b);
+    }
+
+    const seen = new Set();
+    for (const db of dragged) {
+      for (const ob of others) {
+        // Center alignments
+        if (Math.abs(db.cx - ob.cx) < threshold) {
+          const key = `v-${ob.cx.toFixed(2)}`;
+          if (!seen.has(key)) { guides.push({ axis: 'vertical', pos: ob.cx }); seen.add(key); }
+        }
+        if (Math.abs(db.cy - ob.cy) < threshold) {
+          const key = `h-${ob.cy.toFixed(2)}`;
+          if (!seen.has(key)) { guides.push({ axis: 'horizontal', pos: ob.cy }); seen.add(key); }
+        }
+        // Edge alignments
+        const edgePairs = [
+          [db.left, ob.left, 'vertical'], [db.right, ob.right, 'vertical'],
+          [db.left, ob.right, 'vertical'], [db.right, ob.left, 'vertical'],
+          [db.top, ob.top, 'horizontal'], [db.bottom, ob.bottom, 'horizontal'],
+          [db.top, ob.bottom, 'horizontal'], [db.bottom, ob.top, 'horizontal'],
+        ];
+        for (const [dv, ov, axis] of edgePairs) {
+          if (Math.abs(dv - ov) < threshold) {
+            const prefix = axis === 'vertical' ? 'v' : 'h';
+            const key = `${prefix}-${ov.toFixed(2)}`;
+            if (!seen.has(key)) { guides.push({ axis, pos: ov }); seen.add(key); }
+          }
+        }
+      }
+    }
+    return guides;
+  }
 
   // Resize observer
   useEffect(() => {
@@ -159,11 +259,13 @@ export default function App() {
     drawCanvas(ctx, canvasState, canvasSize.w, canvasSize.h);
   }, [canvasState, canvasSize, currentView]);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts (with redo support)
   useEffect(() => {
     const handler = (e) => {
       if (modal) return;
-      if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); redo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undo(); return; }
       if (e.key === 'Delete') deleteSelected();
       if (e.key === 'Escape') cancelGhost();
       if (e.key === 'r' || e.key === 'R') { if (!e.ctrlKey) rotateSelected(); }
@@ -179,6 +281,46 @@ export default function App() {
     setTimeout(() => document.addEventListener('click', handler), 0);
     return () => document.removeEventListener('click', handler);
   }, [menuOpen]);
+
+  // Auto-restore from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(AUTOSAVE_KEY);
+      if (saved) {
+        const d = deserializeProject(saved);
+        setRoomWidth(d.roomWidth);
+        setRoomHeight(d.roomHeight);
+        setTables(d.tables);
+        setChairBlocks(d.chairBlocks);
+        setVenueElements(d.venueElements);
+        setAttendees(d.attendees);
+        setDisabledAttendees(d.disabledAttendees);
+        setNextTableId(d.nextTableId);
+        setNextBlockId(d.nextBlockId);
+        setNextElementId(d.nextElementId);
+        setNextColorIdx(d.nextColorIdx);
+        setStatus('Project restored');
+      }
+    } catch (err) {
+      console.warn('Auto-restore failed:', err);
+    }
+  }, []);
+
+  // Auto-save to localStorage (debounced 1s)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        const data = serializeProject({
+          roomWidth, roomHeight, tables, chairBlocks, venueElements,
+          attendees, disabledAttendees, nextTableId, nextBlockId, nextElementId, nextColorIdx,
+        });
+        localStorage.setItem(AUTOSAVE_KEY, data);
+      } catch (err) {
+        console.warn('Auto-save failed:', err);
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees, disabledAttendees, nextTableId, nextBlockId, nextElementId, nextColorIdx]);
 
   // === ACTIONS ===
 
@@ -303,10 +445,7 @@ export default function App() {
     const unassigned = attendees.map((_, i) => i).filter(i => !assigned.has(i) && !disabledAttendees.has(i));
     if (!unassigned.length) { setStatus('No unassigned attendees'); return; }
 
-    if (mode === 'alpha') {
-      const [p, s] = firstFirst ? [1, 0] : [0, 1];
-      unassigned.sort((a, b) => attendees[a][p].localeCompare(attendees[b][p]) || attendees[a][s].localeCompare(attendees[b][s]));
-    }
+    if (mode === 'alpha') unassigned.sort((a, b) => attendees[a][0].localeCompare(attendees[b][0]) || attendees[a][1].localeCompare(attendees[b][1]));
     else if (mode === 'random') unassigned.sort(() => Math.random() - 0.5);
 
     const emptySeats = [];
@@ -373,7 +512,6 @@ export default function App() {
     });
     const blob = new Blob([data], { type: 'application/json' });
 
-    // Use File System Access API if available (Chrome/Edge — lets user pick location + name)
     if (window.showSaveFilePicker) {
       try {
         const handle = await window.showSaveFilePicker({
@@ -386,11 +524,10 @@ export default function App() {
         setStatus(`Saved: ${handle.name}`);
         return;
       } catch (err) {
-        if (err.name === 'AbortError') return; // user cancelled
+        if (err.name === 'AbortError') return;
       }
     }
 
-    // Fallback: auto-download
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -398,222 +535,6 @@ export default function App() {
     a.click();
     URL.revokeObjectURL(url);
     setStatus('Project saved');
-  }
-
-  async function exportImage(opts) {
-    const { resolution, includeGrid, includeNames, content } = opts;
-    const pxPerFt = resolution === 'ultra' ? 75 : resolution === 'high' ? 50 : 30;
-    const padding = 40;
-
-    // Canvas dimensions for room
-    const roomW = roomWidth * pxPerFt;
-    const roomH = roomHeight * pxPerFt;
-
-    // Build summary data
-    const allEntities = [
-      ...tables.map(t => ({ entity: t, type: 'table', name: t.name || `Table ${t.id}`, total: getTableTotalSeats(t) })),
-      ...chairBlocks.map(b => ({ entity: b, type: 'block', name: b.name || `Block ${b.id}`, total: getBlockTotalSeats(b) })),
-    ];
-
-    // Measure summary if needed
-    const showCanvas = content !== 'summary';
-    const showSummary = content !== 'canvas';
-
-    const colWidth = Math.round(260 * pxPerFt / 15);
-    const lineH = Math.round(20 * pxPerFt / 15);
-    const headerH = Math.round(36 * pxPerFt / 15);
-    const colGap = Math.round(20 * pxPerFt / 15);
-    const summaryPadding = Math.round(40 * pxPerFt / 15);
-    const titleH = showSummary ? Math.round(50 * pxPerFt / 15) : 0;
-    const fontScale = pxPerFt / 15;
-
-    // Calculate summary height
-    let summaryH = 0;
-    let summaryContentW = showCanvas ? roomW + padding * 2 : 0;
-    if (showSummary && allEntities.length > 0) {
-      if (!showCanvas) {
-        // Summary-only: pick width to fit ~3 columns, or fewer if less entities
-        const idealCols = Math.min(3, allEntities.length);
-        summaryContentW = summaryPadding * 2 + idealCols * colWidth + (idealCols - 1) * colGap;
-      }
-      const cols = Math.max(1, Math.floor((summaryContentW - summaryPadding * 2 + colGap) / (colWidth + colGap)));
-
-      // Pack entities into columns (greedy: add to shortest column)
-      const colHeights = new Array(cols).fill(0);
-      allEntities.forEach(e => {
-        const h = headerH + e.total * lineH + 16; // 16 = gap after each table
-        const minCol = colHeights.indexOf(Math.min(...colHeights));
-        colHeights[minCol] += h;
-      });
-      summaryH = titleH + Math.max(...colHeights) + summaryPadding * 2;
-    }
-
-    const totalW = showCanvas ? Math.max(roomW + padding * 2, summaryContentW) : summaryContentW;
-    const totalH = (showCanvas ? roomH + padding * 2 : 0) + summaryH;
-
-    const offscreen = document.createElement('canvas');
-    offscreen.width = totalW;
-    offscreen.height = totalH;
-    const ctx = offscreen.getContext('2d');
-
-    // Ensure fonts are loaded before rendering
-    await document.fonts.ready;
-
-    // Dark background
-    ctx.fillStyle = '#0d1b2a';
-    ctx.fillRect(0, 0, totalW, totalH);
-
-    // Draw canvas
-    if (showCanvas) {
-      const exportState = {
-        roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees,
-        selectedItem: null, selectedItems: [],
-        ghostEntity: null, ghostType: null,
-        showPlacement: includeNames, gridSize,
-        hideGrid: !includeGrid, firstFirst,
-        scale: pxPerFt, offsetX: padding, offsetY: padding,
-      };
-      drawCanvas(ctx, exportState, totalW, showCanvas ? roomH + padding * 2 : 0);
-    }
-
-    // Draw summary
-    if (showSummary && allEntities.length > 0) {
-      const summaryTop = showCanvas ? roomH + padding * 2 : 0;
-      const cols = Math.max(1, Math.floor((totalW - summaryPadding * 2 + colGap) / (colWidth + colGap)));
-
-      // Separator line
-      if (showCanvas) {
-        ctx.strokeStyle = '#2d3a5a';
-        ctx.lineWidth = Math.max(2, fontScale * 1.5);
-        ctx.beginPath();
-        ctx.moveTo(summaryPadding, summaryTop + Math.round(10 * fontScale));
-        ctx.lineTo(totalW - summaryPadding, summaryTop + Math.round(10 * fontScale));
-        ctx.stroke();
-      }
-
-      // Title
-      ctx.fillStyle = '#e8e8e8';
-      ctx.font = `bold ${Math.round(22 * fontScale)}px "DM Sans", sans-serif`;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      ctx.fillText('Seating Assignments', summaryPadding, summaryTop + Math.round(20 * fontScale));
-
-      const startY = summaryTop + titleH + summaryPadding;
-
-      // Pack entities into columns
-      const colContents = Array.from({ length: cols }, () => []);
-      const colHeights = new Array(cols).fill(0);
-      allEntities.forEach(e => {
-        const h = headerH + e.total * lineH + 16;
-        const minCol = colHeights.indexOf(Math.min(...colHeights));
-        colContents[minCol].push(e);
-        colHeights[minCol] += h;
-      });
-
-      colContents.forEach((entities, colIdx) => {
-        const colX = summaryPadding + colIdx * (colWidth + colGap);
-        let curY = startY;
-
-        entities.forEach(({ entity, type, name, total }) => {
-          // Table header background
-          ctx.fillStyle = entity.color || '#2E86AB';
-          if (ctx.roundRect) {
-            ctx.beginPath();
-            ctx.roundRect(colX, curY, colWidth, headerH - 4, Math.round(6 * fontScale));
-            ctx.fill();
-          } else {
-            ctx.fillRect(colX, curY, colWidth, headerH - 4);
-          }
-
-          // Header text
-          const filled = type === 'table'
-            ? Object.keys(entity.assignments).length
-            : Object.keys(entity.assignments).length;
-          // Light color check for text contrast
-          const c = (entity.color || '').replace('#', '');
-          const lum = c.length === 6 ? (parseInt(c.substring(0,2),16)*299 + parseInt(c.substring(2,4),16)*587 + parseInt(c.substring(4,6),16)*114) / 1000 : 0;
-          ctx.fillStyle = lum > 160 ? '#000' : '#fff';
-          ctx.font = `bold ${Math.round(14 * fontScale)}px "DM Sans", sans-serif`;
-          ctx.textAlign = 'left';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(name, colX + Math.round(10 * fontScale), curY + headerH / 2 - 2);
-          ctx.font = `${Math.round(12 * fontScale)}px "DM Sans", sans-serif`;
-          ctx.textAlign = 'right';
-          ctx.fillText(`${filled}/${total}`, colX + colWidth - Math.round(10 * fontScale), curY + headerH / 2 - 2);
-          curY += headerH;
-
-          // Seats
-          for (let s = 0; s < total; s++) {
-            let seatKey, occ, attIdx;
-            if (type === 'table') {
-              seatKey = s;
-              occ = s in entity.assignments;
-              attIdx = occ ? entity.assignments[s] : null;
-            } else {
-              const r = Math.floor(s / entity.cols);
-              const c = s % entity.cols;
-              seatKey = `${r}-${c}`;
-              occ = seatKey in entity.assignments;
-              attIdx = occ ? entity.assignments[seatKey] : null;
-            }
-
-            const seatY = curY + s * lineH;
-
-            // Alternating row bg
-            if (s % 2 === 0) {
-              ctx.fillStyle = 'rgba(255,255,255,0.03)';
-              ctx.fillRect(colX, seatY, colWidth, lineH);
-            }
-
-            // Seat number
-            ctx.fillStyle = '#6b7a90';
-            ctx.font = `${Math.round(11 * fontScale)}px "DM Sans", sans-serif`;
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(`${s + 1}.`, colX + Math.round(10 * fontScale), seatY + lineH / 2);
-
-            // Name or empty
-            if (occ && attIdx != null && attIdx < attendees.length) {
-              ctx.fillStyle = '#e8e8e8';
-              ctx.font = `${Math.round(12 * fontScale)}px "DM Sans", sans-serif`;
-              ctx.fillText(displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst), colX + Math.round(32 * fontScale), seatY + lineH / 2);
-            } else {
-              ctx.fillStyle = '#4a5568';
-              ctx.font = `italic ${Math.round(11 * fontScale)}px "DM Sans", sans-serif`;
-              ctx.fillText('— Empty —', colX + Math.round(32 * fontScale), seatY + lineH / 2);
-            }
-          }
-          curY += total * lineH + 16;
-        });
-      });
-    }
-
-    // Export as PNG — small delay to let canvas rendering settle
-    await new Promise(resolve => setTimeout(resolve, 100));
-    offscreen.toBlob(async (blob) => {
-      if (window.showSaveFilePicker) {
-        try {
-          const handle = await window.showSaveFilePicker({
-            suggestedName: 'seating_chart.png',
-            types: [{ description: 'PNG Image', accept: { 'image/png': ['.png'] } }],
-          });
-          const writable = await handle.createWritable();
-          await writable.write(blob);
-          await writable.close();
-          setStatus(`Exported: ${handle.name}`);
-          return;
-        } catch (err) {
-          if (err.name === 'AbortError') return;
-        }
-      }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'seating_chart.png';
-      a.click();
-      URL.revokeObjectURL(url);
-      setStatus('Image exported');
-    }, 'image/png');
   }
 
   function loadProject(e) {
@@ -636,6 +557,8 @@ export default function App() {
         setNextColorIdx(d.nextColorIdx);
         setSelectedItem(null);
         setSelectedItems([]);
+        setPanX(0);
+        setPanY(0);
         setStatus('Project loaded');
       } catch (err) {
         setStatus('Error loading project: ' + err.message);
@@ -660,6 +583,11 @@ export default function App() {
     setSelectedItems([]);
     setRoomWidth(60);
     setRoomHeight(40);
+    setPanX(0);
+    setPanY(0);
+    undoStack.current = [];
+    redoStack.current = [];
+    localStorage.removeItem(AUTOSAVE_KEY);
     setStatus('New project started');
   }
 
@@ -819,12 +747,9 @@ export default function App() {
   function confirmAddAttendee(params) {
     if (params.first || params.last) {
       const newList = [...attendees, [params.last, params.first]];
-      newList.sort((a, b) => {
-        const [p1, s1] = firstFirst ? [1, 0] : [0, 1];
-        return a[p1].toLowerCase().localeCompare(b[p1].toLowerCase()) || a[s1].toLowerCase().localeCompare(b[s1].toLowerCase());
-      });
+      newList.sort((a, b) => a[0].toLowerCase().localeCompare(b[0].toLowerCase()) || a[1].toLowerCase().localeCompare(b[1].toLowerCase()));
       setAttendees(newList);
-      setStatus(`Added: ${displayName(params.last, params.first, firstFirst)}`);
+      setStatus(`Added: ${dn([params.last, params.first])}`);
     }
     setModal(null);
   }
@@ -833,9 +758,8 @@ export default function App() {
     const newDisabled = new Set(disabledAttendees);
     if (newDisabled.has(attIdx)) {
       newDisabled.delete(attIdx);
-      setStatus(`Enabled: ${displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst)}`);
+      setStatus(`Enabled: ${dn(attendees[attIdx])}`);
     } else {
-      // Remove from assignments first
       setTables(prev => prev.map(t => {
         const newA = { ...t.assignments };
         Object.entries(newA).forEach(([k, v]) => { if (v === attIdx) delete newA[k]; });
@@ -847,7 +771,7 @@ export default function App() {
         return { ...b, assignments: newA };
       }));
       newDisabled.add(attIdx);
-      setStatus(`Disabled: ${displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst)}`);
+      setStatus(`Disabled: ${dn(attendees[attIdx])}`);
     }
     setDisabledAttendees(newDisabled);
   }
@@ -867,7 +791,7 @@ export default function App() {
         return { ...b, assignments: newA };
       }));
     }
-    setStatus(found ? `Recalled: ${displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst)}` : 'Not seated');
+    setStatus(found ? `Recalled: ${dn(attendees[attIdx])}` : 'Not seated');
   }
 
   // Assign attendee to seat (from list view click or canvas drop)
@@ -903,7 +827,6 @@ export default function App() {
     setStatus('Unassigned');
   }
 
-  // Swap two seats within the same entity
   function swapSeats(entityType, entityId, seatKeyA, seatKeyB) {
     if (seatKeyA === seatKeyB) return;
     saveUndo();
@@ -929,15 +852,12 @@ export default function App() {
     setStatus('Seats swapped');
   }
 
-  // Move attendee from one seat to another (potentially cross-entity)
   function moveSeatToSeat(srcType, srcId, srcKey, dstType, dstId, dstKey) {
     saveUndo();
-    // Same entity = swap
     if (srcType === dstType && srcId === dstId) {
       swapSeats(srcType, srcId, srcKey, dstKey);
       return;
     }
-    // Cross-entity: remove from src, add to dst
     let attIdx = null;
     const srcUpdater = prev => prev.map(e => {
       if (e.id !== srcId) return e;
@@ -959,7 +879,6 @@ export default function App() {
     setStatus('Moved');
   }
 
-  // Force-assign attendee to specific seat (overrides "already assigned" check for popup drops)
   function forceAssignSeat(entityType, entityId, seatKey, attIdx) {
     if (disabledAttendees.has(attIdx)) return;
     saveUndo();
@@ -971,7 +890,6 @@ export default function App() {
     setStatus('Assigned');
   }
 
-  // Rename a table or block
   function renameEntity(entityType, entityId, newName) {
     if (entityType === 'table') {
       setTables(prev => prev.map(t => t.id === entityId ? { ...t, name: newName } : t));
@@ -980,7 +898,6 @@ export default function App() {
     }
   }
 
-  // Assign attendee to next available seat on an entity
   function assignNextAvailable(entityType, entityId, attIdx) {
     if (disabledAttendees.has(attIdx)) return;
     if (assigned.has(attIdx)) return;
@@ -1009,7 +926,6 @@ export default function App() {
     const y = e.clientY - rect.top;
 
     if (ghostEntity) {
-      // Place ghost
       const raw = { x: pxToFt(x - offsetX), y: pxToFt(y - offsetY) };
       const snapped = snapEntityPos(raw.x, raw.y, ghostEntity, ghostType);
       saveUndo();
@@ -1031,38 +947,61 @@ export default function App() {
       return;
     }
 
-    // Handle drag-drop of attendee onto canvas seat or table body
-    if (dragAttendee !== null) {
-      // Don't start a new action while dragging — drops are handled in mouseUp
+    if (dragAttendee !== null) return;
+    if (popupDragSeat) return;
+
+    // Check resize handles on selected venue elements first
+    const resizeHit = resizeHandleHitTest(x, y, canvasState);
+    if (resizeHit) {
+      const { entity: ve, corner } = resizeHit;
+      const hw = ve.widthFt / 2, hh = ve.heightFt / 2;
+      // Anchor is the opposite corner (in ft, world coords)
+      const anchorMap = {
+        0: { ax: ve.x + hw, ay: ve.y + hh }, // TL → anchor BR
+        1: { ax: ve.x - hw, ay: ve.y + hh }, // TR → anchor BL
+        2: { ax: ve.x + hw, ay: ve.y - hh }, // BL → anchor TR
+        3: { ax: ve.x - hw, ay: ve.y - hh }, // BR → anchor TL
+      };
+      const { ax, ay } = anchorMap[corner];
+      saveUndo();
+      resizeRef.current = { entityId: ve.id, corner, anchorX: ax, anchorY: ay, origW: ve.widthFt, origH: ve.heightFt };
+      setDragging(true);
       return;
     }
 
-    // Handle drag from popup onto canvas — drops are handled in mouseUp
-    if (popupDragSeat) {
-      return;
-    }
-
-    // Try to select or start drag
     const hit = hitTest(x, y, canvasState);
     if (hit) {
       const [type, item] = hit;
       const ctrlHeld = e.ctrlKey || e.metaKey;
+      const isInMulti = selectedItems.length > 1 && selectedItems.some(([t, i]) => t === type && i.id === item.id);
+
       if (ctrlHeld) {
-        // Multi-select
         setSelectedItems(prev => {
           const exists = prev.find(([t, i]) => t === type && i.id === item.id);
           if (exists) return prev.filter(([t, i]) => !(t === type && i.id === item.id));
           return [...prev, [type, item]];
         });
+      } else if (isInMulti) {
+        // Clicked on item already in multi-selection — start multi-drag, keep selection
+        const origPositions = selectedItems.map(([t, i]) => {
+          // Look up latest entity from state
+          let latest = i;
+          if (t === 'table') latest = tables.find(e => e.id === i.id) || i;
+          else if (t === 'block') latest = chairBlocks.find(e => e.id === i.id) || i;
+          else latest = venueElements.find(e => e.id === i.id) || i;
+          return { type: t, id: i.id, origX: latest.x, origY: latest.y };
+        });
+        dragRef.current = { startX: x, startY: y, entity: null, multiDrag: origPositions, hasMoved: false };
+        setDragging(true);
       } else {
         setSelectedItem([type, item]);
         setSelectedItems([]);
+        dragRef.current = { startX: x, startY: y, entity: item, origX: item.x, origY: item.y, multiDrag: null, hasMoved: false };
+        setDragging(true);
       }
-      dragRef.current = { startX: x, startY: y, entity: item, origX: item.x, origY: item.y, hasMoved: false };
-      setDragging(true);
     } else {
-      setSelectedItem(null);
-      setSelectedItems([]);
+      // Empty space — start potential pan
+      panRef.current = { active: true, startX: e.clientX, startY: e.clientY, origPanX: panX, origPanY: panY, hasMoved: false };
     }
   }
 
@@ -1079,6 +1018,88 @@ export default function App() {
       return;
     }
 
+    // Pan on empty space drag
+    if (panRef.current.active) {
+      const dx = e.clientX - panRef.current.startX;
+      const dy = e.clientY - panRef.current.startY;
+      if (!panRef.current.hasMoved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+        panRef.current.hasMoved = true;
+      }
+      if (panRef.current.hasMoved) {
+        setPanX(panRef.current.origPanX + dx);
+        setPanY(panRef.current.origPanY + dy);
+      }
+      return;
+    }
+
+    // Venue element resize
+    if (resizeRef.current) {
+      const worldX = pxToFt(x - offsetX);
+      const worldY = pxToFt(y - offsetY);
+      const { entityId, anchorX, anchorY } = resizeRef.current;
+      const MIN_SIZE = 2;
+      let newW = Math.max(MIN_SIZE, Math.abs(worldX - anchorX));
+      let newH = Math.max(MIN_SIZE, Math.abs(worldY - anchorY));
+      // Snap dimensions to grid if enabled
+      if (snapEnabled && gridSize > 0) {
+        newW = Math.max(MIN_SIZE, Math.round(newW / gridSize) * gridSize);
+        newH = Math.max(MIN_SIZE, Math.round(newH / gridSize) * gridSize);
+      }
+      const newCx = anchorX + (worldX >= anchorX ? newW / 2 : -newW / 2);
+      const newCy = anchorY + (worldY >= anchorY ? newH / 2 : -newH / 2);
+      setVenueElements(prev => prev.map(v => v.id === entityId ? { ...v, widthFt: newW, heightFt: newH, x: newCx, y: newCy } : v));
+      return;
+    }
+
+    // Handle cursor for resize handle hover (only when not dragging)
+    if (!dragging && !panRef.current.active) {
+      const rh = resizeHandleHitTest(x, y, canvasState);
+      if (rh) {
+        setResizeCursor(rh.corner === 0 || rh.corner === 3 ? 'nwse-resize' : 'nesw-resize');
+      } else if (resizeCursor) {
+        setResizeCursor(null);
+      }
+    }
+
+    // Multi-select drag
+    if (dragging && dragRef.current.multiDrag) {
+      const items = dragRef.current.multiDrag;
+      const anyLocked = items.some(m => {
+        if (m.type === 'table') return tables.find(t => t.id === m.id)?.locked;
+        if (m.type === 'block') return chairBlocks.find(b => b.id === m.id)?.locked;
+        return venueElements.find(v => v.id === m.id)?.locked;
+      });
+      if (anyLocked) return;
+      const dx = pxToFt(x - dragRef.current.startX);
+      const dy = pxToFt(y - dragRef.current.startY);
+      if (!dragRef.current.hasMoved && (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5)) {
+        dragRef.current.hasMoved = true;
+        saveUndo();
+      }
+      if (dragRef.current.hasMoved) {
+        const tableUpdates = new Map();
+        const blockUpdates = new Map();
+        const venueUpdates = new Map();
+        for (const m of items) {
+          const nx = Math.max(0, Math.min(roomWidth, m.origX + dx));
+          const ny = Math.max(0, Math.min(roomHeight, m.origY + dy));
+          if (m.type === 'table') tableUpdates.set(m.id, { x: nx, y: ny });
+          else if (m.type === 'block') blockUpdates.set(m.id, { x: nx, y: ny });
+          else venueUpdates.set(m.id, { x: nx, y: ny });
+        }
+        if (tableUpdates.size) setTables(prev => prev.map(t => tableUpdates.has(t.id) ? { ...t, ...tableUpdates.get(t.id) } : t));
+        if (blockUpdates.size) setChairBlocks(prev => prev.map(b => blockUpdates.has(b.id) ? { ...b, ...blockUpdates.get(b.id) } : b));
+        if (venueUpdates.size) setVenueElements(prev => prev.map(v => venueUpdates.has(v.id) ? { ...v, ...venueUpdates.get(v.id) } : v));
+
+        // Smart guides for multi-drag
+        if (smartGuidesEnabled) {
+          setSmartGuides(computeSmartGuides(items));
+        }
+      }
+      return;
+    }
+
+    // Single entity drag
     if (dragging && dragRef.current.entity && selectedItem) {
       const item = dragRef.current.entity;
       if (item.locked) return;
@@ -1096,12 +1117,28 @@ export default function App() {
         if (type === 'table') setTables(prev => prev.map(t => t.id === item.id ? { ...t, x: snapped.x, y: snapped.y } : t));
         else if (type === 'block') setChairBlocks(prev => prev.map(b => b.id === item.id ? { ...b, x: snapped.x, y: snapped.y } : b));
         else setVenueElements(prev => prev.map(el => el.id === item.id ? { ...el, x: snapped.x, y: snapped.y } : el));
+
+        // Smart guides for single drag
+        if (smartGuidesEnabled) {
+          setSmartGuides(computeSmartGuides([{ type, id: item.id }]));
+        }
       }
     }
   }
 
   function handleCanvasMouseUp(e) {
-    // Handle drag-drop of attendee onto canvas seat or table body
+    // End pan
+    if (panRef.current.active) {
+      const didPan = panRef.current.hasMoved;
+      panRef.current = { active: false, startX: 0, startY: 0, origPanX: 0, origPanY: 0, hasMoved: false };
+      if (!didPan) {
+        // Clean click on empty space — deselect
+        setSelectedItem(null);
+        setSelectedItems([]);
+      }
+      return;
+    }
+
     if (dragAttendee !== null) {
       const rect = canvasRef.current.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -1121,7 +1158,6 @@ export default function App() {
       return;
     }
 
-    // Handle drag from popup onto canvas seat (cross-table move)
     if (popupDragSeat) {
       const rect = canvasRef.current.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -1138,7 +1174,9 @@ export default function App() {
     }
 
     setDragging(false);
-    dragRef.current = { startX: 0, startY: 0, entity: null, hasMoved: false };
+    setSmartGuides([]);
+    resizeRef.current = null;
+    dragRef.current = { startX: 0, startY: 0, entity: null, multiDrag: null, hasMoved: false };
   }
 
   function handleCanvasDoubleClick(e) {
@@ -1160,14 +1198,52 @@ export default function App() {
     }
   }
 
-  function handleWheel(e) {
-    if (e.ctrlKey) {
-      e.preventDefault();
-      setZoomLevel(prev => e.deltaY < 0
-        ? Math.min(400, prev === 100 ? 125 : prev + 25)
-        : Math.max(25, prev > 100 ? prev - 25 : prev === 100 ? 75 : prev - 25));
-    }
-  }
+  // Wheel handler — must be non-passive to preventDefault browser zoom
+  // Uses ref to avoid stale closures for zoom-to-cursor math
+  useEffect(() => {
+    zoomParamsRef.current = { scale, panX, panY, canvasSize, roomWidth, roomHeight, zoomLevel };
+  }, [scale, panX, panY, canvasSize, roomWidth, roomHeight, zoomLevel]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const { scale: curScale, panX: curPanX, panY: curPanY, canvasSize: cs, roomWidth: rw, roomHeight: rh, zoomLevel: curZoom } = zoomParamsRef.current;
+        // Mouse position in canvas
+        const rect = el.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        // World point under cursor (in ft)
+        const curOffX = (cs.w - rw * curScale) / 2 + curPanX;
+        const curOffY = (cs.h - rh * curScale) / 2 + curPanY;
+        const worldX = (mx - curOffX) / curScale;
+        const worldY = (my - curOffY) / curScale;
+        // New zoom level
+        const newZoom = e.deltaY < 0
+          ? Math.min(400, curZoom === 100 ? 125 : curZoom + 25)
+          : Math.max(25, curZoom > 100 ? curZoom - 25 : curZoom === 100 ? 75 : curZoom - 25);
+        // New scale
+        const base = Math.max(2, Math.min((cs.w - 80) / rw, (cs.h - 80) / rh));
+        const newScale = newZoom === 100 ? base : base * newZoom / 100;
+        // Adjust pan so world point stays under cursor
+        const newBaseOffX = (cs.w - rw * newScale) / 2;
+        const newBaseOffY = (cs.h - rh * newScale) / 2;
+        const newPanX = mx - worldX * newScale - newBaseOffX;
+        const newPanY = my - worldY * newScale - newBaseOffY;
+        setZoomLevel(newZoom);
+        setPanX(newPanX);
+        setPanY(newPanY);
+      } else {
+        e.preventDefault();
+        setPanX(prev => prev - e.deltaX);
+        setPanY(prev => prev - e.deltaY);
+      }
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, [currentView]);
 
   // Drag attendee from list
   function handleAttendeeDragStart(e, attIdx) {
@@ -1176,13 +1252,192 @@ export default function App() {
     setDragGhostPos({ x: e.clientX, y: e.clientY });
   }
 
+  // Export image
+  async function exportImage(opts) {
+    const { resolution, includeGrid, includeNames, content } = opts;
+    const pxPerFt = resolution === 'ultra' ? 75 : resolution === 'high' ? 50 : 30;
+    const padding = 40;
+
+    const roomW = roomWidth * pxPerFt;
+    const roomH = roomHeight * pxPerFt;
+
+    const allEntities = [
+      ...tables.map(t => ({ entity: t, type: 'table', name: t.name || `Table ${t.id}`, total: getTableTotalSeats(t) })),
+      ...chairBlocks.map(b => ({ entity: b, type: 'block', name: b.name || `Section ${b.id}`, total: getBlockTotalSeats(b) })),
+    ];
+
+    const showCanvas = content !== 'summary';
+    const showSummary = content !== 'canvas';
+
+    const colWidth = Math.round(260 * pxPerFt / 15);
+    const lineH = Math.round(20 * pxPerFt / 15);
+    const headerH = Math.round(36 * pxPerFt / 15);
+    const colGap = Math.round(20 * pxPerFt / 15);
+    const summaryPadding = Math.round(40 * pxPerFt / 15);
+    const titleH = showSummary ? Math.round(50 * pxPerFt / 15) : 0;
+    const fontScale = pxPerFt / 15;
+
+    let summaryH = 0;
+    let summaryContentW = showCanvas ? roomW + padding * 2 : 0;
+    if (showSummary && allEntities.length > 0) {
+      if (!showCanvas) {
+        const idealCols = Math.min(3, allEntities.length);
+        summaryContentW = summaryPadding * 2 + idealCols * colWidth + (idealCols - 1) * colGap;
+      }
+      const cols = Math.max(1, Math.floor((summaryContentW - summaryPadding * 2 + colGap) / (colWidth + colGap)));
+
+      const colHeights = new Array(cols).fill(0);
+      allEntities.forEach(e => {
+        const h = headerH + e.total * lineH + 16;
+        const minCol = colHeights.indexOf(Math.min(...colHeights));
+        colHeights[minCol] += h;
+      });
+      summaryH = titleH + Math.max(...colHeights) + summaryPadding * 2;
+    }
+
+    const totalW = showCanvas ? Math.max(roomW + padding * 2, summaryContentW) : summaryContentW;
+    const totalH = (showCanvas ? roomH + padding * 2 : 0) + summaryH;
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width = totalW;
+    offscreen.height = totalH;
+    const ctx = offscreen.getContext('2d');
+
+    await document.fonts.ready;
+
+    ctx.fillStyle = '#0d1b2a';
+    ctx.fillRect(0, 0, totalW, totalH);
+
+    if (showCanvas) {
+      const exportState = {
+        roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees,
+        selectedItem: null, selectedItems: [],
+        ghostEntity: null, ghostType: null,
+        showPlacement: includeNames, gridSize,
+        hideGrid: !includeGrid,
+        scale: pxPerFt, offsetX: padding, offsetY: padding,
+      };
+      drawCanvas(ctx, exportState, totalW, showCanvas ? roomH + padding * 2 : 0);
+    }
+
+    if (showSummary && allEntities.length > 0) {
+      const summaryTop = showCanvas ? roomH + padding * 2 : 0;
+      const cols = Math.max(1, Math.floor((summaryContentW - summaryPadding * 2 + colGap) / (colWidth + colGap)));
+
+      // Title
+      ctx.fillStyle = '#e8e8e8';
+      ctx.font = `bold ${Math.round(20 * fontScale)}px "DM Sans", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText('Seating Summary', totalW / 2, summaryTop + summaryPadding);
+
+      // Pack entities into columns
+      const colHeights = new Array(cols).fill(0);
+      const colAssignments = allEntities.map(e => {
+        const minCol = colHeights.indexOf(Math.min(...colHeights));
+        const y = colHeights[minCol];
+        colHeights[minCol] += headerH + e.total * lineH + 16;
+        return { ...e, col: minCol, y };
+      });
+
+      colAssignments.forEach(({ entity, type, name, total, col, y: relY }) => {
+        const colX = (totalW - (cols * colWidth + (cols - 1) * colGap)) / 2 + col * (colWidth + colGap);
+        let curY = summaryTop + summaryPadding + titleH + relY;
+
+        // Header
+        ctx.fillStyle = entity.color || '#8B4513';
+        ctx.fillRect(colX, curY, colWidth, headerH);
+        const filled = type === 'table'
+          ? Object.keys(entity.assignments).length
+          : Object.keys(entity.assignments).length;
+        const c = (entity.color || '').replace('#', '');
+        const lum = c.length === 6 ? (parseInt(c.substring(0,2),16)*299 + parseInt(c.substring(2,4),16)*587 + parseInt(c.substring(4,6),16)*114) / 1000 : 0;
+        ctx.fillStyle = lum > 160 ? '#000' : '#fff';
+        ctx.font = `bold ${Math.round(14 * fontScale)}px "DM Sans", sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(name, colX + Math.round(10 * fontScale), curY + headerH / 2 - 2);
+        ctx.font = `${Math.round(12 * fontScale)}px "DM Sans", sans-serif`;
+        ctx.textAlign = 'right';
+        ctx.fillText(`${filled}/${total}`, colX + colWidth - Math.round(10 * fontScale), curY + headerH / 2 - 2);
+        curY += headerH;
+
+        // Seats
+        for (let s = 0; s < total; s++) {
+          let seatKey, occ, attIdx;
+          if (type === 'table') {
+            seatKey = s;
+            occ = s in entity.assignments;
+            attIdx = occ ? entity.assignments[s] : null;
+          } else {
+            const r = Math.floor(s / entity.cols);
+            const c = s % entity.cols;
+            seatKey = `${r}-${c}`;
+            occ = seatKey in entity.assignments;
+            attIdx = occ ? entity.assignments[seatKey] : null;
+          }
+
+          const seatY = curY + s * lineH;
+
+          if (s % 2 === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.03)';
+            ctx.fillRect(colX, seatY, colWidth, lineH);
+          }
+
+          ctx.fillStyle = '#6b7a90';
+          ctx.font = `${Math.round(11 * fontScale)}px "DM Sans", sans-serif`;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(`${s + 1}.`, colX + Math.round(10 * fontScale), seatY + lineH / 2);
+
+          if (occ && attIdx != null && attIdx < attendees.length) {
+            ctx.fillStyle = '#e8e8e8';
+            ctx.font = `${Math.round(12 * fontScale)}px "DM Sans", sans-serif`;
+            ctx.fillText(nameOrder === 'firstLast'
+              ? `${attendees[attIdx][1]}, ${attendees[attIdx][0]}`
+              : `${attendees[attIdx][0]}, ${attendees[attIdx][1]}`, colX + Math.round(32 * fontScale), seatY + lineH / 2);
+          } else {
+            ctx.fillStyle = '#4a5568';
+            ctx.font = `italic ${Math.round(11 * fontScale)}px "DM Sans", sans-serif`;
+            ctx.fillText('— Empty —', colX + Math.round(32 * fontScale), seatY + lineH / 2);
+          }
+        }
+      });
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 100));
+    offscreen.toBlob(async (blob) => {
+      if (window.showSaveFilePicker) {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: 'seating_chart.png',
+            types: [{ description: 'PNG Image', accept: { 'image/png': ['.png'] } }],
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          setStatus(`Exported: ${handle.name}`);
+          return;
+        } catch (err) {
+          if (err.name === 'AbortError') return;
+        }
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'seating_chart.png';
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus('Image exported');
+    }, 'image/png');
+  }
+
   // Stats
   const totalSeats = tables.reduce((s, t) => s + getTableTotalSeats(t), 0) + chairBlocks.reduce((s, b) => s + getBlockTotalSeats(b), 0);
   const totalAssigned = assigned.size;
   const unassignedCount = attendees.length - totalAssigned;
 
-  // Filtered attendee list
-  // Live entity from current state (for toolbar display — avoids stale snapshots)
+  // Live entity from current state (for toolbar display)
   const liveSelectedEntity = useMemo(() => {
     if (!selectedItem) return null;
     const [type, ref] = selectedItem;
@@ -1195,19 +1450,16 @@ export default function App() {
     const term = search.toLowerCase();
     let list = attendees.map((a, i) => ({ last: a[0], first: a[1], idx: i }))
       .filter(a => !term || `${a.last} ${a.first}`.toLowerCase().includes(term));
-    // Sort by display name order
-    const [pk, sk] = firstFirst ? ['first', 'last'] : ['last', 'first'];
-    list.sort((a, b) => a[pk].toLowerCase().localeCompare(b[pk].toLowerCase()) || a[sk].toLowerCase().localeCompare(b[sk].toLowerCase()));
     if (attendeeListMode === 'unassigned-first') {
       list.sort((a, b) => {
         const aActive = !assigned.has(a.idx) && !disabledAttendees.has(a.idx);
         const bActive = !assigned.has(b.idx) && !disabledAttendees.has(b.idx);
         if (aActive !== bActive) return aActive ? -1 : 1;
-        return 0; // preserve alphabetical within group
+        return 0;
       });
     }
     return list;
-  }, [attendees, search, attendeeListMode, assigned, disabledAttendees, firstFirst]);
+  }, [attendees, search, attendeeListMode, assigned, disabledAttendees]);
 
   // === RENDER ===
   return (
@@ -1215,12 +1467,12 @@ export default function App() {
       {/* Global drag ghost */}
       {dragAttendee !== null && dragGhostPos && (
         <div className="drag-ghost" style={{ left: dragGhostPos?.x, top: dragGhostPos?.y }}>
-          {displayName(attendees[dragAttendee][0], attendees[dragAttendee][1], firstFirst)}
+          {dn(attendees[dragAttendee])}
         </div>
       )}
       {popupDragSeat && dragGhostPos && (
         <div className="drag-ghost" style={{ left: dragGhostPos?.x, top: dragGhostPos?.y }}>
-          {displayName(attendees[popupDragSeat.attIdx]?.[0], attendees[popupDragSeat.attIdx]?.[1], firstFirst)}
+          {dn(attendees[popupDragSeat.attIdx])}
         </div>
       )}
 
@@ -1256,7 +1508,7 @@ export default function App() {
         <div className="topbar-section" style={{ position: 'relative' }}>
           <button className="btn btn-sm" onClick={() => setMenuOpen(menuOpen === 'settings' ? null : 'settings')}>Settings ▾</button>
           {menuOpen === 'settings' && (
-            <div className="menu-dropdown" onClick={e => e.stopPropagation()}>
+            <div className="menu-dropdown">
               <label className="menu-toggle">
                 <input type="checkbox" checked={showPlacement} onChange={e => setShowPlacement(e.target.checked)} />
                 Show Names
@@ -1269,9 +1521,17 @@ export default function App() {
                 <input type="checkbox" checked={snapEnabled} onChange={e => setSnapEnabled(e.target.checked)} />
                 Snap to Grid
               </label>
+              <label className="menu-toggle">
+                <input type="checkbox" checked={smartGuidesEnabled} onChange={e => setSmartGuidesEnabled(e.target.checked)} />
+                Smart Guides
+              </label>
+              <label className="menu-toggle">
+                <input type="checkbox" checked={showSeatNumbers} onChange={e => setShowSeatNumbers(e.target.checked)} />
+                Show Seat Numbers
+              </label>
               <div className="menu-divider" />
               <label className="menu-toggle">
-                <input type="checkbox" checked={firstFirst} onChange={e => setNameOrder(e.target.checked ? 'first-last' : 'last-first')} />
+                <input type="checkbox" checked={nameOrder === 'firstLast'} onChange={e => setNameOrder(e.target.checked ? 'firstLast' : 'lastFirst')} />
                 First Name First
               </label>
             </div>
@@ -1296,7 +1556,7 @@ export default function App() {
           <button className="btn btn-icon btn-sm" onClick={() => setZoomLevel(prev => Math.max(25, prev > 100 ? prev - 25 : prev === 100 ? 75 : prev - 25))}>−</button>
           <span className="topbar-label" style={{ width: 36, textAlign: 'center' }}>{zoomLevel === 100 ? 'Fit' : `${zoomLevel}%`}</span>
           <button className="btn btn-icon btn-sm" onClick={() => setZoomLevel(prev => Math.min(400, prev === 100 ? 125 : prev + 25))}>+</button>
-          <button className="btn btn-sm" onClick={() => setZoomLevel(100)}>Fit</button>
+          <button className="btn btn-sm" onClick={() => { setZoomLevel(100); setPanX(0); setPanY(0); }}>Fit</button>
         </div>
 
         <div className="topbar-divider" />
@@ -1414,7 +1674,7 @@ export default function App() {
                         }}
                         onDragStart={e => e.preventDefault()}
                         title={isAssigned ? 'Assigned' : isDisabled ? 'Disabled' : 'Click to select, drag to seat'}>
-                        {displayName(a.last, a.first, firstFirst)}
+                        {nameOrder === 'firstLast' ? `${a.first}, ${a.last}` : `${a.last}, ${a.first}`}
                       </div>
                     );
                   })}
@@ -1449,10 +1709,9 @@ export default function App() {
 
         {/* CANVAS VIEW */}
         {currentView === 'canvas' && (
-          <div className="canvas-area" ref={containerRef}
-            onWheel={handleWheel}>
+          <div className="canvas-area" ref={containerRef}>
             <canvas ref={canvasRef}
-              style={{ cursor: ghostEntity ? 'crosshair' : dragging ? 'grabbing' : 'default' }}
+              style={{ cursor: ghostEntity ? 'crosshair' : resizeCursor ? resizeCursor : resizeRef.current ? (resizeRef.current.corner === 0 || resizeRef.current.corner === 3 ? 'nwse-resize' : 'nesw-resize') : (dragging || panRef.current.hasMoved) ? 'grabbing' : 'grab' }}
               onMouseDown={handleCanvasMouseDown}
               onMouseMove={handleCanvasMouseMove}
               onMouseUp={handleCanvasMouseUp}
@@ -1470,6 +1729,7 @@ export default function App() {
                 assigned={assigned}
                 dragAttendee={dragAttendee}
                 popupDragSeat={popupDragSeat}
+                nameOrder={nameOrder}
                 onClose={() => setTablePopupOpen(false)}
                 onUnassign={(seatKey) => unassignSeat(selectedItem[0], selectedItem[1].id, seatKey)}
                 onRename={(newName) => renameEntity(selectedItem[0], selectedItem[1].id, newName)}
@@ -1500,7 +1760,6 @@ export default function App() {
                     setDragGhostPos(null);
                   }
                 }}
-                firstFirst={firstFirst}
               />
             )}
           </div>
@@ -1539,7 +1798,7 @@ export default function App() {
             }}
             onSelect={(type, entity) => { setSelectedItem([type, entity]); setSelectedItems([]); }}
             selectedItem={selectedItem}
-            firstFirst={firstFirst}
+            nameOrder={nameOrder}
           />
         )}
       </div>
@@ -1557,8 +1816,8 @@ export default function App() {
 }
 
 // === TABLE POPUP ===
-function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned, dragAttendee, popupDragSeat,
-  onClose, onUnassign, onRename, onSeatDragStart, onSeatDrop, onDropNextAvailable, firstFirst }) {
+function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned, dragAttendee, popupDragSeat, nameOrder,
+  onClose, onUnassign, onRename, onSeatDragStart, onSeatDrop, onDropNextAvailable }) {
   const [dragOverSeat, setDragOverSeat] = useState(null);
   const [dragOverHeader, setDragOverHeader] = useState(false);
   const [editingName, setEditingName] = useState(false);
@@ -1567,7 +1826,6 @@ function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned
 
   if (!entity) return null;
 
-  // Build seat keys list
   let seatKeys = [];
   if (entityType === 'table') {
     const total = getTableTotalSeats(entity);
@@ -1580,7 +1838,7 @@ function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned
     }
   }
 
-  const defaultName = entityType === 'table' ? `Table ${entity.id}` : `Block ${entity.id}`;
+  const defaultName = entityType === 'table' ? `Table ${entity.id}` : `Section ${entity.id}`;
   const displayName = entity.name || defaultName;
   const filledCount = Object.keys(entity.assignments).length;
   const isDragging = dragAttendee !== null || popupDragSeat !== null;
@@ -1647,7 +1905,7 @@ function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned
                   <span className="seat-name"
                     onMouseDown={e => { if (e.button === 0) onSeatDragStart(key, attIdx, e); }}
                     title="Drag to reorder or move to another table">
-                    {displayName(att[0], att[1], firstFirst)}
+                    {nameOrder === 'firstLast' ? `${att[1]}, ${att[0]}` : `${att[0]}, ${att[1]}`}
                   </span>
                   <button className="seat-remove" onClick={() => onUnassign(key)} title="Remove from seat">✕</button>
                 </>
@@ -1665,7 +1923,7 @@ function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned
 }
 
 // === LIST VIEW ===
-function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees, selectedAttendee, search, collapsedCards, onSearchChange, onToggleCollapse, onExpandAll, onCollapseAll, onAssign, onUnassign, onRename, onChangeColor, onDelete, dragAttendee, onDropNextAvailable, onSelect, selectedItem, firstFirst }) {
+function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees, selectedAttendee, search, collapsedCards, onSearchChange, onToggleCollapse, onExpandAll, onCollapseAll, onAssign, onUnassign, onRename, onChangeColor, onDelete, dragAttendee, onDropNextAvailable, onSelect, selectedItem, nameOrder }) {
   const totalSeats = tables.reduce((s, t) => s + getTableTotalSeats(t), 0) + chairBlocks.reduce((s, b) => s + getBlockTotalSeats(b), 0);
   const totalAssigned = assigned.size;
   const unassigned = attendees.length - totalAssigned;
@@ -1693,9 +1951,9 @@ function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees,
             onAssign={onAssign} onUnassign={onUnassign}
             onRename={onRename} onChangeColor={onChangeColor} onDelete={onDelete}
             dragAttendee={dragAttendee} onDropNextAvailable={onDropNextAvailable}
-            onSelect={onSelect} isSelected={selectedItem?.[0] === 'table' && selectedItem?.[1]?.id === t.id} firstFirst={firstFirst} />
+            onSelect={onSelect} isSelected={selectedItem?.[0] === 'table' && selectedItem?.[1]?.id === t.id} nameOrder={nameOrder} />
         ))}
-        {chairBlocks.filter(b => !term || (b.name || `Block ${b.id}`).toLowerCase().includes(term)).map(b => (
+        {chairBlocks.filter(b => !term || (b.name || `Section ${b.id}`).toLowerCase().includes(term)).map(b => (
           <EntityCard key={`b${b.id}`} entity={b} entityType="block" attendees={attendees}
             collapsed={collapsedCards.has(`block_${b.id}`)}
             onToggle={() => onToggleCollapse(`block_${b.id}`)}
@@ -1703,7 +1961,7 @@ function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees,
             onAssign={onAssign} onUnassign={onUnassign}
             onRename={onRename} onChangeColor={onChangeColor} onDelete={onDelete}
             dragAttendee={dragAttendee} onDropNextAvailable={onDropNextAvailable}
-            onSelect={onSelect} isSelected={selectedItem?.[0] === 'block' && selectedItem?.[1]?.id === b.id} firstFirst={firstFirst} />
+            onSelect={onSelect} isSelected={selectedItem?.[0] === 'block' && selectedItem?.[1]?.id === b.id} nameOrder={nameOrder} />
         ))}
       </div>
       {!tables.length && !chairBlocks.length && (
@@ -1715,7 +1973,7 @@ function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees,
   );
 }
 
-function EntityCard({ entity, entityType, attendees, collapsed, onToggle, selectedAttendee, assigned, disabledAttendees, onAssign, onUnassign, onRename, onChangeColor, onDelete, dragAttendee, onDropNextAvailable, onSelect, isSelected, firstFirst }) {
+function EntityCard({ entity, entityType, attendees, collapsed, onToggle, selectedAttendee, assigned, disabledAttendees, onAssign, onUnassign, onRename, onChangeColor, onDelete, dragAttendee, onDropNextAvailable, onSelect, isSelected, nameOrder }) {
   const total = getTotalSeats(entity);
   const filled = Object.keys(entity.assignments).length;
   const defaultName = `${entityType === 'table' ? 'Table' : 'Block'} ${entity.id}`;
@@ -1790,7 +2048,7 @@ function EntityCard({ entity, entityType, attendees, collapsed, onToggle, select
                 attendees={attendees} selectedAttendee={selectedAttendee}
                 assigned={assigned} disabledAttendees={disabledAttendees}
                 onAssign={onAssign} onUnassign={onUnassign}
-                dragAttendee={dragAttendee} firstFirst={firstFirst} />
+                dragAttendee={dragAttendee} nameOrder={nameOrder} />
             ))
           ) : (
             Array.from({ length: entity.rows }, (_, r) => (
@@ -1808,8 +2066,8 @@ function EntityCard({ entity, entityType, attendees, collapsed, onToggle, select
                         else if (selectedAttendee != null && !assigned.has(selectedAttendee) && !disabledAttendees.has(selectedAttendee))
                           onAssign(entityType, entity.id, key, selectedAttendee);
                       }}
-                      title={occ && attIdx < attendees.length ? displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst) : 'Empty — select an attendee and click'}>
-                      {occ && attIdx < attendees.length ? formatName(attendees[attIdx][1], attendees[attIdx][0], 'initials', firstFirst) : '—'}
+                      title={occ && attIdx < attendees.length ? (nameOrder === 'firstLast' ? `${attendees[attIdx][1]}, ${attendees[attIdx][0]}` : `${attendees[attIdx][0]}, ${attendees[attIdx][1]}`) : 'Empty — select an attendee and click'}>
+                      {occ && attIdx < attendees.length ? formatName(attendees[attIdx][1], attendees[attIdx][0], 'initials', nameOrder) : '—'}
                     </span>
                   );
                 })}
@@ -1823,10 +2081,12 @@ function EntityCard({ entity, entityType, attendees, collapsed, onToggle, select
   );
 }
 
-function SeatRow({ seatIdx, seatKey, entity, entityType, attendees, selectedAttendee, assigned, disabledAttendees, onAssign, onUnassign, dragAttendee, firstFirst }) {
+function SeatRow({ seatIdx, seatKey, entity, entityType, attendees, selectedAttendee, assigned, disabledAttendees, onAssign, onUnassign, dragAttendee, nameOrder }) {
   const occ = seatKey in entity.assignments;
   const attIdx = occ ? entity.assignments[seatKey] : null;
-  const name = occ && attIdx < attendees.length ? displayName(attendees[attIdx][0], attendees[attIdx][1], firstFirst) : null;
+  const name = occ && attIdx < attendees.length
+    ? (nameOrder === 'firstLast' ? `${attendees[attIdx][1]}, ${attendees[attIdx][0]}` : `${attendees[attIdx][0]}, ${attendees[attIdx][1]}`)
+    : null;
   const [isDragOver, setIsDragOver] = useState(false);
 
   return (
