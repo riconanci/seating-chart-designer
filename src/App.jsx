@@ -480,13 +480,11 @@ export default function App() {
     setStatus(`Auto-assigned ${count} attendees`);
     setMenuOpen(null);
   }
-
   function clearAllAssignments() {
     saveUndo();
     setTables(prev => prev.map(t => ({ ...t, assignments: {} })));
     setChairBlocks(prev => prev.map(b => ({ ...b, assignments: {} })));
     setStatus('All assignments cleared');
-    setMenuOpen(null);
   }
 
   // CSV
@@ -1002,6 +1000,7 @@ export default function App() {
     } else {
       // Empty space — start potential pan
       panRef.current = { active: true, startX: e.clientX, startY: e.clientY, origPanX: panX, origPanY: panY, hasMoved: false };
+      setDragging(true);
     }
   }
 
@@ -1131,6 +1130,7 @@ export default function App() {
     if (panRef.current.active) {
       const didPan = panRef.current.hasMoved;
       panRef.current = { active: false, startX: 0, startY: 0, origPanX: 0, origPanY: 0, hasMoved: false };
+      setDragging(false);
       if (!didPan) {
         // Clean click on empty space — deselect
         setSelectedItem(null);
@@ -1495,7 +1495,7 @@ export default function App() {
           <button className="btn btn-sm" onClick={() => setMenuOpen(menuOpen === 'tools' ? null : 'tools')}>Tools ▾</button>
           {menuOpen === 'tools' && (
             <div className="menu-dropdown">
-              <button className="menu-item" onClick={clearAllAssignments}>Clear All Assignments</button>
+              <button className="menu-item" onClick={() => { setMenuOpen(null); setModal({ type: 'confirm', message: 'Clear all seat assignments? This will unassign every attendee from every table and block.', onConfirm: () => { clearAllAssignments(); setModal(null); } }); }}>Clear All Assignments</button>
               <div className="menu-divider" />
               <div className="menu-label">Auto-Assign</div>
               <button className="menu-item" onClick={() => autoAssign('alpha')}>Alphabetical</button>
@@ -1509,31 +1509,33 @@ export default function App() {
           <button className="btn btn-sm" onClick={() => setMenuOpen(menuOpen === 'settings' ? null : 'settings')}>Settings ▾</button>
           {menuOpen === 'settings' && (
             <div className="menu-dropdown">
-              <label className="menu-toggle">
-                <input type="checkbox" checked={showPlacement} onChange={e => setShowPlacement(e.target.checked)} />
+              <div className="menu-toggle" onClick={e => { e.stopPropagation(); setShowPlacement(!showPlacement); }}>
+                <input type="checkbox" checked={showPlacement} readOnly />
                 Show Names
-              </label>
-              <label className="menu-toggle">
-                <input type="checkbox" checked={hideGrid} onChange={e => setHideGrid(e.target.checked)} />
+              </div>
+              <div className="menu-toggle" onClick={e => { e.stopPropagation(); setHideGrid(!hideGrid); }}>
+                <input type="checkbox" checked={hideGrid} readOnly />
                 Hide Grid
-              </label>
-              <label className="menu-toggle">
-                <input type="checkbox" checked={snapEnabled} onChange={e => setSnapEnabled(e.target.checked)} />
+              </div>
+              <div className="menu-toggle" onClick={e => { e.stopPropagation(); setSnapEnabled(!snapEnabled); }}>
+                <input type="checkbox" checked={snapEnabled} readOnly />
                 Snap to Grid
-              </label>
-              <label className="menu-toggle">
-                <input type="checkbox" checked={smartGuidesEnabled} onChange={e => setSmartGuidesEnabled(e.target.checked)} />
+              </div>
+              <div className="menu-toggle" onClick={e => { e.stopPropagation(); setSmartGuidesEnabled(!smartGuidesEnabled); }}>
+                <input type="checkbox" checked={smartGuidesEnabled} readOnly />
                 Smart Guides
-              </label>
-              <label className="menu-toggle">
-                <input type="checkbox" checked={showSeatNumbers} onChange={e => setShowSeatNumbers(e.target.checked)} />
+              </div>
+              <div className="menu-toggle" onClick={e => { e.stopPropagation(); setShowSeatNumbers(!showSeatNumbers); }}>
+                <input type="checkbox" checked={showSeatNumbers} readOnly />
                 Show Seat Numbers
-              </label>
+              </div>
               <div className="menu-divider" />
-              <label className="menu-toggle">
-                <input type="checkbox" checked={nameOrder === 'firstLast'} onChange={e => setNameOrder(e.target.checked ? 'firstLast' : 'lastFirst')} />
-                First Name First
-              </label>
+              <div className="menu-toggle" onClick={e => { e.stopPropagation(); setNameOrder(nameOrder === 'firstLast' ? 'lastFirst' : 'firstLast'); }}>
+                <input type="checkbox" checked={nameOrder === 'firstLast'} readOnly />
+                Swap Name Order
+              </div>
+              <div className="menu-divider" />
+              <button className="menu-item" onClick={() => { setMenuOpen(null); setModal({ type: 'help' }); }}>Help</button>
             </div>
           )}
         </div>
@@ -1572,9 +1574,10 @@ export default function App() {
         <div className="topbar-divider" />
 
         <div className="topbar-section">
-          <span className="topbar-label">View</span>
-          <button className={`btn btn-sm ${currentView === 'canvas' ? 'btn-accent' : ''}`} onClick={() => setCurrentView('canvas')}>Canvas</button>
-          <button className={`btn btn-sm ${currentView === 'list' ? 'btn-accent' : ''}`} onClick={() => setCurrentView('list')}>List</button>
+          <div className="view-toggle">
+            <button className={currentView === 'canvas' ? 'active' : ''} onClick={() => setCurrentView('canvas')}>Canvas</button>
+            <button className={currentView === 'list' ? 'active' : ''} onClick={() => setCurrentView('list')}>List</button>
+          </div>
         </div>
 
         <div style={{ flex: 1 }} />
@@ -1711,7 +1714,7 @@ export default function App() {
         {currentView === 'canvas' && (
           <div className="canvas-area" ref={containerRef}>
             <canvas ref={canvasRef}
-              style={{ cursor: ghostEntity ? 'crosshair' : resizeCursor ? resizeCursor : resizeRef.current ? (resizeRef.current.corner === 0 || resizeRef.current.corner === 3 ? 'nwse-resize' : 'nesw-resize') : (dragging || panRef.current.hasMoved) ? 'grabbing' : 'grab' }}
+              style={{ cursor: ghostEntity ? 'crosshair' : resizeCursor ? resizeCursor : resizeRef.current ? (resizeRef.current.corner === 0 || resizeRef.current.corner === 3 ? 'nwse-resize' : 'nesw-resize') : (dragging || panRef.current.hasMoved) ? 'grabbing' : 'default' }}
               onMouseDown={handleCanvasMouseDown}
               onMouseMove={handleCanvasMouseMove}
               onMouseUp={handleCanvasMouseUp}
@@ -1810,7 +1813,37 @@ export default function App() {
       </div>
 
       {/* MODAL */}
-      {modal && <Modal modal={modal} onClose={() => setModal(null)} onConfirmAdd={confirmAdd} onConfirmEdit={confirmEdit} onConfirmAddAttendee={confirmAddAttendee} onExport={exportImage} />}
+      {modal && modal.type !== 'help' && <Modal modal={modal} onClose={() => setModal(null)} onConfirmAdd={confirmAdd} onConfirmEdit={confirmEdit} onConfirmAddAttendee={confirmAddAttendee} onExport={exportImage} />}
+      {modal && modal.type === 'help' && (
+        <div className="modal-overlay" onClick={() => setModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <h3 style={{ margin: 0 }}>Getting Started</h3>
+              <button className="btn btn-sm" onClick={() => setModal(null)} style={{ padding: '2px 8px', fontSize: 14, lineHeight: 1 }}>✕</button>
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, fontSize: 13, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+              <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>1. Set Up Your Room</strong><br />
+                Adjust room dimensions (in feet) using the width × height inputs in the toolbar. Use the Grid dropdown to set snap spacing.</p>
+              <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>2. Add Tables & Venue Elements</strong><br />
+                Click <strong>+ Seating</strong> to add round tables, rectangular tables, or chair blocks. Click <strong>+ Venue</strong> for elements like dance floors, stages, and bars. Configure settings in the popup, then click the canvas to place.</p>
+              <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>3. Load Your Guest List</strong><br />
+                Click <strong>Load CSV</strong> in the left panel. Your CSV should have two columns: one name per column, one guest per row (e.g. <code style={{ background: 'var(--bg-tertiary)', padding: '1px 4px', borderRadius: 3 }}>Smith, John</code>). Use <strong>Swap Name Order</strong> in Settings if names appear reversed.</p>
+              <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>4. Assign Seats</strong><br />
+                <strong>Drag & drop</strong> an attendee from the left panel onto a seat or table on the canvas. Or switch to <strong>List View</strong> and click empty seats to assign the selected attendee. Use <strong>Tools → Auto-Assign</strong> to fill seats automatically.</p>
+              <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>5. Arrange Your Layout</strong><br />
+                Drag tables to reposition. Double-click to edit properties. Select and use the toolbar to <strong>Rotate</strong>, <strong>Copy</strong>, <strong>Lock</strong>, or <strong>Delete</strong>. Hold <strong>Ctrl+click</strong> to multi-select, then drag to move as a group.</p>
+              <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>6. Navigate the Canvas</strong><br />
+                <strong>Ctrl+scroll</strong> to zoom in/out (zooms toward your cursor). Drag empty space to pan. Click <strong>Fit</strong> to reset the view.</p>
+              <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>7. Save & Export</strong><br />
+                <strong>File → Save Project</strong> saves a .json file you can reload later. <strong>File → Export Image</strong> creates a PNG of your layout. The CSV export button (↓) in the left panel exports your seating assignments.</p>
+              <p style={{ marginBottom: 0 }}><strong style={{ color: 'var(--accent)' }}>Keyboard Shortcuts</strong><br />
+                <strong>Ctrl+Z</strong> — Undo&nbsp;&nbsp;|&nbsp;&nbsp;<strong>Ctrl+Shift+Z</strong> — Redo<br />
+                <strong>R</strong> — Rotate selected&nbsp;&nbsp;|&nbsp;&nbsp;<strong>Delete</strong> — Remove selected<br />
+                <strong>Escape</strong> — Cancel placement&nbsp;&nbsp;|&nbsp;&nbsp;<strong>Right-click</strong> — Cancel ghost</p>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

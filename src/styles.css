@@ -390,6 +390,39 @@ input[type="color"] { width: 30px; height: 26px; padding: 1px; cursor: pointer; 
 }
 .menu-toggle:hover { background: rgba(255,255,255,0.05); }
 
+/* View toggle — segmented pill */
+.view-toggle {
+  display: inline-flex;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+.view-toggle button {
+  padding: 5px 18px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: transparent;
+  color: var(--text-muted);
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+.view-toggle button:hover {
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.06);
+}
+.view-toggle button.active {
+  background: var(--accent);
+  color: #1a1a2e;
+  box-shadow: 0 0 8px rgba(226, 179, 64, 0.3);
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .left-panel { width: 200px; min-width: 200px; }
@@ -453,6 +486,10 @@ input[type="color"] { width: 30px; height: 26px; padding: 1px; cursor: pointer; 
 }
 .table-popup-title:hover {
   background: rgba(255,255,255,0.06);
+}
+.table-popup.is-dragging {
+  user-select: none;
+  -webkit-user-select: none;
 }
 .table-popup.is-dragging .table-popup-title,
 .table-popup.is-dragging .table-popup-header,

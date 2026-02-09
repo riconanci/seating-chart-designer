@@ -56,7 +56,7 @@ function isLightColor(hex) {
 export function drawCanvas(ctx, state, canvasW, canvasH) {
   const { roomWidth, roomHeight, tables, chairBlocks, venueElements,
     attendees, selectedItem, selectedItems, ghostEntity, ghostType,
-    showPlacement, gridSize, hideGrid, scale, offsetX, offsetY, smartGuides } = state;
+    showPlacement, gridSize, hideGrid, firstFirst, scale, offsetX, offsetY } = state;
 
   ctx.clearRect(0, 0, canvasW, canvasH);
 
@@ -99,31 +99,6 @@ export function drawCanvas(ctx, state, canvasW, canvasH) {
 
   // Ghost placement
   if (ghostEntity) drawGhost(ctx, ghostEntity, ghostType, state);
-
-  // Smart guides
-  if (smartGuides && smartGuides.length > 0) {
-    ctx.save();
-    ctx.setLineDash([6, 4]);
-    ctx.strokeStyle = '#ff6b9d';
-    ctx.lineWidth = 1;
-    ctx.globalAlpha = 0.8;
-    const rw = roomWidth * scale;
-    const rh = roomHeight * scale;
-    for (const guide of smartGuides) {
-      ctx.beginPath();
-      if (guide.axis === 'vertical') {
-        const px = offsetX + guide.pos * scale;
-        ctx.moveTo(px, offsetY);
-        ctx.lineTo(px, offsetY + rh);
-      } else {
-        const py = offsetY + guide.pos * scale;
-        ctx.moveTo(offsetX, py);
-        ctx.lineTo(offsetX + rw, py);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
 }
 
 function isSelected(entity, state) {
@@ -138,7 +113,7 @@ function isSelected(entity, state) {
 }
 
 function drawTable(ctx, t, state) {
-  const { scale, offsetX, offsetY, attendees, showPlacement, nameOrder, showSeatNumbers } = state;
+  const { scale, offsetX, offsetY, attendees, showPlacement, firstFirst, showSeatNumbers } = state;
   const cx = offsetX + t.x * scale;
   const cy = offsetY + t.y * scale;
   const sel = isSelected(t, state);
@@ -176,10 +151,10 @@ function drawTable(ctx, t, state) {
       if (occ && showPlacement && t.assignments[i] < attendees.length) {
         const [last, first] = attendees[t.assignments[i]];
         ctx.fillStyle = '#fff';
-        ctx.font = `${Math.max(8, sr * 0.55)}px "DM Sans", sans-serif`;
+        ctx.font = `${Math.max(8, sr * 0.65)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(formatName(first, last, 'short', nameOrder), sx, sy);
+        ctx.fillText(formatName(first, last, 'short', firstFirst), sx, sy);
       } else if (!occ && (i === 0 || showSeatNumbers)) {
         ctx.fillStyle = i === 0 ? '#e2b340' : '#aaa';
         ctx.font = `${i === 0 ? 'bold ' : ''}${Math.max(8, sr * 0.7)}px "DM Sans", sans-serif`;
@@ -219,10 +194,10 @@ function drawTable(ctx, t, state) {
       if (occ && showPlacement && t.assignments[i] < attendees.length) {
         const [last, first] = attendees[t.assignments[i]];
         ctx.fillStyle = '#fff';
-        ctx.font = `${Math.max(8, sr * 0.55)}px "DM Sans", sans-serif`;
+        ctx.font = `${Math.max(8, sr * 0.65)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(formatName(first, last, 'short', nameOrder), sx, sy);
+        ctx.fillText(formatName(first, last, 'short', firstFirst), sx, sy);
       } else if (!occ && (i === 0 || showSeatNumbers)) {
         ctx.fillStyle = i === 0 ? '#e2b340' : '#aaa';
         ctx.font = `${i === 0 ? 'bold ' : ''}${Math.max(8, sr * 0.7)}px "DM Sans", sans-serif`;
@@ -250,7 +225,7 @@ function drawTable(ctx, t, state) {
 }
 
 function drawBlock(ctx, b, state) {
-  const { scale, offsetX, offsetY, attendees, showPlacement, nameOrder, showSeatNumbers } = state;
+  const { scale, offsetX, offsetY, attendees, showPlacement, firstFirst, showSeatNumbers } = state;
   const dims = getBlockDimensions(b);
   const x = offsetX + b.x * scale;
   const y = offsetY + b.y * scale;
@@ -296,7 +271,7 @@ function drawBlock(ctx, b, state) {
         ctx.font = `${Math.max(7, chairSize * 0.4)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(formatName(first, last, 'initials', nameOrder), cx, cy);
+        ctx.fillText(formatName(first, last, 'initials', firstFirst), cx, cy);
       } else if (!occ && showSeatNumbers) {
         ctx.fillStyle = '#aaa';
         ctx.font = `${Math.max(6, chairSize * 0.35)}px "DM Sans", sans-serif`;
@@ -332,15 +307,60 @@ function drawVenueElement(ctx, e, state) {
   ctx.lineWidth = sel ? Math.max(2, scale * 0.15) : Math.max(1, scale * 0.06);
   ctx.strokeRect(cx - hw, cy - hh, hw * 2, hh * 2);
 
-  const name = e.name || e.elementType.replace('_', ' ');
+  // Diagonal pattern for floors
+  if (e.elementType === 'dance_floor') {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(cx - hw, cy - hh, hw * 2, hh * 2);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = Math.max(1, scale * 0.06);
+    const spacing = Math.max(15, scale);
+    for (let i = -hw * 2; i < hw * 2; i += spacing) {
+      ctx.beginPath();
+      ctx.moveTo(cx - hw + i, cy - hh);
+      ctx.lineTo(cx - hw + i + hh * 2, cy + hh);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  const name = e.name || e.elementType.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
   const isLight = isLightColor(e.color);
-  ctx.font = `bold ${Math.max(10, scale * 0.9)}px "DM Sans", sans-serif`;
+  const iconMap = { dance_floor: '💃', stage: '🎭', bar: '🍸', dj_booth: '🎵', buffet: '🍽️' };
+  const icon = iconMap[e.elementType] || '';
+  const nameOffset = icon ? Math.max(-8, scale * -0.5) : 0;
+  const iconSize = Math.max(16, scale * 1.4);
+
+  ctx.font = `bold ${Math.max(11, scale * 0.85)}px "DM Sans", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = isLight ? '#000' : '#fff';
-  ctx.fillText(name, cx, cy);
+
+  if (e.heightFt > e.widthFt * 1.5) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(name, 0, nameOffset);
+    if (icon) {
+      ctx.globalAlpha = 0.35;
+      ctx.font = `${iconSize}px sans-serif`;
+      ctx.fillText(icon, 0, -nameOffset + Math.max(6, scale * 0.4));
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  } else {
+    ctx.fillText(name, cx, cy + nameOffset);
+    if (icon) {
+      ctx.globalAlpha = 0.35;
+      ctx.font = `${iconSize}px sans-serif`;
+      ctx.fillText(icon, cx, cy - nameOffset + Math.max(6, scale * 0.4));
+      ctx.globalAlpha = 1;
+    }
+  }
 
   if (e.locked) {
+    ctx.font = `${Math.max(12, scale * 0.8)}px sans-serif`;
     ctx.fillStyle = isLight ? '#000' : '#fff';
     ctx.fillText('🔒', cx, cy + Math.max(15, scale * 1));
   }
@@ -484,27 +504,23 @@ export function seatHitTest(x, y, state) {
     const sr = 0.75 * scale;
 
     if (t.tableType === 'round') {
-      const seatGap = Math.max(3, scale * 0.2);
       const r = (t.widthFt * scale) / 2;
-      for (let s = 0; s < t.seats; s++) {
-        const a = (2 * Math.PI * s / t.seats) - Math.PI / 2;
+      const seatGap = Math.max(3, scale * 0.2);
+      for (let si = 0; si < t.seats; si++) {
+        const a = (2 * Math.PI * si / t.seats) - Math.PI / 2;
         const d = r + sr + seatGap;
         const sx = cx + d * Math.cos(a);
         const sy = cy + d * Math.sin(a);
-        if (Math.hypot(x - sx, y - sy) < sr + 3) {
-          return { entityType: 'table', entity: t, seatKey: s };
-        }
+        if (Math.hypot(x - sx, y - sy) < sr + 2) return { entityType: 'table', entity: t, seatKey: si };
       }
     } else {
       const positions = getRectSeatPositions(t, scale);
-      const totalSeats = getTableTotalSeats(t);
-      for (let s = 0; s < Math.min(totalSeats, positions.length); s++) {
-        const [dx, dy] = positions[s];
+      const total = getTableTotalSeats(t);
+      for (let si = 0; si < Math.min(positions.length, total); si++) {
+        const [dx, dy] = positions[si];
         const sx = cx + dx;
         const sy = cy + dy;
-        if (Math.hypot(x - sx, y - sy) < sr + 3) {
-          return { entityType: 'table', entity: t, seatKey: s };
-        }
+        if (Math.hypot(x - sx, y - sy) < sr + 2) return { entityType: 'table', entity: t, seatKey: si };
       }
     }
   }
@@ -516,13 +532,11 @@ export function seatHitTest(x, y, state) {
     const by = offsetY + b.y * scale;
     const cs = getBlockChairSpacing(b) * scale;
     const chairSize = 1.2 * scale;
-
     for (let r = 0; r < b.rows; r++) {
       for (let c = 0; c < b.cols; c++) {
-        const sx = bx + (c + 0.5) * cs;
-        const sy = by + (r + 0.5) * cs;
-        if (x >= sx - chairSize / 2 - 3 && x <= sx + chairSize / 2 + 3 &&
-            y >= sy - chairSize / 2 - 3 && y <= sy + chairSize / 2 + 3) {
+        const cx2 = bx + (c + 0.5) * cs;
+        const cy2 = by + (r + 0.5) * cs;
+        if (Math.abs(x - cx2) < chairSize / 2 + 2 && Math.abs(y - cy2) < chairSize / 2 + 2) {
           return { entityType: 'block', entity: b, seatKey: `${r}-${c}` };
         }
       }
