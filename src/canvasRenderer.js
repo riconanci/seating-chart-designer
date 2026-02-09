@@ -56,7 +56,10 @@ function isLightColor(hex) {
 export function drawCanvas(ctx, state, canvasW, canvasH) {
   const { roomWidth, roomHeight, tables, chairBlocks, venueElements,
     attendees, selectedItem, selectedItems, ghostEntity, ghostType,
-    showPlacement, gridSize, hideGrid, firstFirst, scale, offsetX, offsetY } = state;
+    showPlacement, gridSize, hideGrid, scale, offsetX, offsetY, nameOrder, smartGuides, showSeatNumbers } = state;
+
+  // Convenience flag for name ordering
+  const firstFirst = nameOrder === 'firstLast';
 
   ctx.clearRect(0, 0, canvasW, canvasH);
 
@@ -73,6 +76,41 @@ export function drawCanvas(ctx, state, canvasW, canvasH) {
   ctx.lineWidth = Math.max(2, scale * 0.1);
   ctx.strokeRect(offsetX, offsetY, rw, rh);
 
+  // Floorplan background image
+  if (state.floorplanImg && state.showFloorplan !== false) {
+    ctx.save();
+    ctx.globalAlpha = state.floorplanOpacity ?? 0.3;
+    // Clip to room bounds
+    ctx.beginPath();
+    ctx.rect(offsetX, offsetY, rw, rh);
+    ctx.clip();
+
+    const img = state.floorplanImg;
+    const fit = state.floorplanFit || 'stretch';
+
+    if (fit === 'contain') {
+      // Maintain aspect ratio, centered within room
+      const imgAspect = img.width / img.height;
+      const roomAspect = rw / rh;
+      let drawW, drawH;
+      if (imgAspect > roomAspect) {
+        drawW = rw;
+        drawH = rw / imgAspect;
+      } else {
+        drawH = rh;
+        drawW = rh * imgAspect;
+      }
+      const dx = offsetX + (rw - drawW) / 2;
+      const dy = offsetY + (rh - drawH) / 2;
+      ctx.drawImage(img, dx, dy, drawW, drawH);
+    } else {
+      // Stretch to fill room exactly
+      ctx.drawImage(img, offsetX, offsetY, rw, rh);
+    }
+
+    ctx.restore();
+  }
+
   // Grid — visual grid size: use gridSize if set, otherwise default to 1ft; hidden if hideGrid is on
   if (!hideGrid) {
     const visualGrid = gridSize > 0 ? gridSize : 1;
@@ -88,17 +126,45 @@ export function drawCanvas(ctx, state, canvasW, canvasH) {
     }
   }
 
+  // Create a local state with firstFirst for sub-functions
+  const renderState = { ...state, firstFirst };
+
   // Venue elements (draw first, behind tables)
-  venueElements.forEach(e => drawVenueElement(ctx, e, state));
+  venueElements.forEach(e => drawVenueElement(ctx, e, renderState));
 
   // Chair blocks
-  chairBlocks.forEach(b => drawBlock(ctx, b, state));
+  chairBlocks.forEach(b => drawBlock(ctx, b, renderState));
 
   // Tables
-  tables.forEach(t => drawTable(ctx, t, state));
+  tables.forEach(t => drawTable(ctx, t, renderState));
 
   // Ghost placement
-  if (ghostEntity) drawGhost(ctx, ghostEntity, ghostType, state);
+  if (ghostEntity) drawGhost(ctx, ghostEntity, ghostType, renderState);
+
+  // Smart guides
+  if (smartGuides && smartGuides.length > 0) {
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = '#00e5ff';
+    ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.7;
+    for (const guide of smartGuides) {
+      if (guide.axis === 'vertical') {
+        const px = offsetX + guide.pos * scale;
+        ctx.beginPath();
+        ctx.moveTo(px, offsetY);
+        ctx.lineTo(px, offsetY + rh);
+        ctx.stroke();
+      } else {
+        const py = offsetY + guide.pos * scale;
+        ctx.beginPath();
+        ctx.moveTo(offsetX, py);
+        ctx.lineTo(offsetX + rw, py);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
 }
 
 function isSelected(entity, state) {
@@ -155,9 +221,9 @@ function drawTable(ctx, t, state) {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(formatName(first, last, 'short', firstFirst), sx, sy);
-      } else if (!occ && (i === 0 || showSeatNumbers)) {
+      } else if ((i === 0 || showSeatNumbers) && (!occ || !showPlacement)) {
         ctx.fillStyle = i === 0 ? '#e2b340' : '#aaa';
-        ctx.font = `${i === 0 ? 'bold ' : ''}${Math.max(8, sr * 0.7)}px "DM Sans", sans-serif`;
+        ctx.font = `${i === 0 ? 'bold ' : ''}${Math.max(8, sr * 1.43)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(String(i + 1), sx, sy);
@@ -198,9 +264,9 @@ function drawTable(ctx, t, state) {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(formatName(first, last, 'short', firstFirst), sx, sy);
-      } else if (!occ && (i === 0 || showSeatNumbers)) {
+      } else if ((i === 0 || showSeatNumbers) && (!occ || !showPlacement)) {
         ctx.fillStyle = i === 0 ? '#e2b340' : '#aaa';
-        ctx.font = `${i === 0 ? 'bold ' : ''}${Math.max(8, sr * 0.7)}px "DM Sans", sans-serif`;
+        ctx.font = `${i === 0 ? 'bold ' : ''}${Math.max(8, sr * 1.43)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(String(i + 1), sx, sy);
@@ -254,16 +320,16 @@ function drawBlock(ctx, b, state) {
   const chairSize = 1.2 * scale;
   for (let r = 0; r < b.rows; r++) {
     for (let c = 0; c < b.cols; c++) {
-      const cx = x + (c + 0.5) * cs;
-      const cy = y + (r + 0.5) * cs;
+      const cx2 = x + (c + 0.5) * cs;
+      const cy2 = y + (r + 0.5) * cs;
       const key = `${r}-${c}`;
       const occ = key in b.assignments;
 
       ctx.fillStyle = occ ? '#48bb78' : b.color;
-      ctx.fillRect(cx - chairSize / 2, cy - chairSize / 2, chairSize, chairSize);
+      ctx.fillRect(cx2 - chairSize / 2, cy2 - chairSize / 2, chairSize, chairSize);
       ctx.strokeStyle = '#333';
       ctx.lineWidth = Math.max(1, scale * 0.06);
-      ctx.strokeRect(cx - chairSize / 2, cy - chairSize / 2, chairSize, chairSize);
+      ctx.strokeRect(cx2 - chairSize / 2, cy2 - chairSize / 2, chairSize, chairSize);
 
       if (occ && showPlacement && b.assignments[key] < attendees.length) {
         const [last, first] = attendees[b.assignments[key]];
@@ -271,13 +337,13 @@ function drawBlock(ctx, b, state) {
         ctx.font = `${Math.max(7, chairSize * 0.4)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(formatName(first, last, 'initials', firstFirst), cx, cy);
-      } else if (!occ && showSeatNumbers) {
+        ctx.fillText(formatName(first, last, 'initials', firstFirst), cx2, cy2);
+      } else if (showSeatNumbers && (!occ || !showPlacement)) {
         ctx.fillStyle = '#aaa';
-        ctx.font = `${Math.max(6, chairSize * 0.35)}px "DM Sans", sans-serif`;
+        ctx.font = `${Math.max(6, chairSize * 0.78)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(key, cx, cy);
+        ctx.fillText(key, cx2, cy2);
       }
     }
   }
@@ -307,60 +373,34 @@ function drawVenueElement(ctx, e, state) {
   ctx.lineWidth = sel ? Math.max(2, scale * 0.15) : Math.max(1, scale * 0.06);
   ctx.strokeRect(cx - hw, cy - hh, hw * 2, hh * 2);
 
-  // Diagonal pattern for floors
+  // Dance floor hatch pattern
   if (e.elementType === 'dance_floor') {
     ctx.save();
     ctx.beginPath();
     ctx.rect(cx - hw, cy - hh, hw * 2, hh * 2);
     ctx.clip();
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-    ctx.lineWidth = Math.max(1, scale * 0.06);
-    const spacing = Math.max(15, scale);
-    for (let i = -hw * 2; i < hw * 2; i += spacing) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = Math.max(1, scale * 0.05);
+    const step = Math.max(8, scale * 0.6);
+    for (let d = -hw * 2 - hh * 2; d < hw * 2 + hh * 2; d += step) {
       ctx.beginPath();
-      ctx.moveTo(cx - hw + i, cy - hh);
-      ctx.lineTo(cx - hw + i + hh * 2, cy + hh);
+      ctx.moveTo(cx - hw + d, cy - hh);
+      ctx.lineTo(cx - hw + d + hh * 2, cy + hh);
       ctx.stroke();
     }
     ctx.restore();
   }
 
-  const name = e.name || e.elementType.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+  // Name label
+  const name = e.name || e.elementType;
   const isLight = isLightColor(e.color);
-  const iconMap = { dance_floor: '💃', stage: '🎭', bar: '🍸', dj_booth: '🎵', buffet: '🍽️' };
-  const icon = iconMap[e.elementType] || '';
-  const nameOffset = icon ? Math.max(-8, scale * -0.5) : 0;
-  const iconSize = Math.max(16, scale * 1.4);
-
-  ctx.font = `bold ${Math.max(11, scale * 0.85)}px "DM Sans", sans-serif`;
+  ctx.font = `bold ${Math.max(10, scale * 0.8)}px "DM Sans", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = isLight ? '#000' : '#fff';
-
-  if (e.heightFt > e.widthFt * 1.5) {
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText(name, 0, nameOffset);
-    if (icon) {
-      ctx.globalAlpha = 0.35;
-      ctx.font = `${iconSize}px sans-serif`;
-      ctx.fillText(icon, 0, -nameOffset + Math.max(6, scale * 0.4));
-      ctx.globalAlpha = 1;
-    }
-    ctx.restore();
-  } else {
-    ctx.fillText(name, cx, cy + nameOffset);
-    if (icon) {
-      ctx.globalAlpha = 0.35;
-      ctx.font = `${iconSize}px sans-serif`;
-      ctx.fillText(icon, cx, cy - nameOffset + Math.max(6, scale * 0.4));
-      ctx.globalAlpha = 1;
-    }
-  }
+  ctx.fillText(name, cx, cy);
 
   if (e.locked) {
-    ctx.font = `${Math.max(12, scale * 0.8)}px sans-serif`;
     ctx.fillStyle = isLight ? '#000' : '#fff';
     ctx.fillText('🔒', cx, cy + Math.max(15, scale * 1));
   }

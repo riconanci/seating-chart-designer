@@ -52,6 +52,13 @@ export default function App() {
   const [resizeCursor, setResizeCursor] = useState(null);
   const [showSeatNumbers, setShowSeatNumbers] = useState(false);
 
+  // Floorplan background
+  const [floorplanData, setFloorplanData] = useState(null); // base64 data URL
+  const [floorplanImg, setFloorplanImg] = useState(null);   // loaded HTMLImageElement
+  const [floorplanOpacity, setFloorplanOpacity] = useState(0.3);
+  const [showFloorplan, setShowFloorplan] = useState(true);
+  const [floorplanFit, setFloorplanFit] = useState('stretch'); // 'stretch' | 'contain'
+
   // Drag state
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef({ startX: 0, startY: 0, entity: null, hasMoved: false });
@@ -64,7 +71,7 @@ export default function App() {
   const panRef = useRef({ active: false, startX: 0, startY: 0, origPanX: 0, origPanY: 0, hasMoved: false });
 
   // Resize state (venue elements)
-  const resizeRef = useRef(null); // { entity, corner, anchorX, anchorY, origW, origH, origCx, origCy }
+  const resizeRef = useRef(null);
 
   // Undo / Redo
   const undoStack = useRef([]);
@@ -76,6 +83,7 @@ export default function App() {
   const [canvasSize, setCanvasSize] = useState({ w: 800, h: 600 });
   const fileInputRef = useRef(null);
   const csvInputRef = useRef(null);
+  const floorplanInputRef = useRef(null);
   const zoomParamsRef = useRef({});
 
   // Compute scale
@@ -94,7 +102,6 @@ export default function App() {
   const assigned = useMemo(() => buildAssignedSet(tables, chairBlocks), [tables, chairBlocks]);
 
   // Display name helper — respects nameOrder setting
-  // att is [lastName, firstName]
   const dn = useCallback((att) => {
     return nameOrder === 'firstLast' ? `${att[1]}, ${att[0]}` : `${att[0]}, ${att[1]}`;
   }, [nameOrder]);
@@ -104,9 +111,11 @@ export default function App() {
     roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees,
     selectedItem, selectedItems, ghostEntity, ghostType,
     showPlacement, gridSize, hideGrid, scale, offsetX, offsetY, nameOrder, smartGuides, showSeatNumbers,
+    floorplanImg, floorplanOpacity, showFloorplan, floorplanFit,
   }), [roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees,
     selectedItem, selectedItems, ghostEntity, ghostType,
-    showPlacement, gridSize, hideGrid, scale, offsetX, offsetY, nameOrder, smartGuides, showSeatNumbers]);
+    showPlacement, gridSize, hideGrid, scale, offsetX, offsetY, nameOrder, smartGuides, showSeatNumbers,
+    floorplanImg, floorplanOpacity, showFloorplan, floorplanFit]);
 
   // Save undo (clears redo stack on new action)
   const saveUndo = useCallback(() => {
@@ -146,7 +155,7 @@ export default function App() {
   // Snap to grid
   const snap = useCallback((v) => snapEnabled && gridSize > 0 ? Math.round(v / gridSize) * gridSize : v, [gridSize, snapEnabled]);
 
-  // Entity-aware snap: round tables snap center, blocks snap top-left, rect entities snap top-left corner
+  // Entity-aware snap
   const snapEntityPos = useCallback((rawX, rawY, entity, eType) => {
     if (!snapEnabled || gridSize <= 0) return { x: rawX, y: rawY };
     const isRound = eType === 'table' && entity.tableType === 'round';
@@ -178,13 +187,12 @@ export default function App() {
   }
 
   function computeSmartGuides(draggedIds) {
-    const threshold = 0.5; // ft
+    const threshold = 0.5;
     const guides = [];
     const dragged = [];
     const others = [];
     const idSet = new Set(draggedIds.map(d => `${d.type}-${d.id}`));
 
-    // Collect all entities, split into dragged vs others
     for (const t of tables) {
       const b = getEntityBounds(t);
       if (idSet.has(`table-${t.id}`)) dragged.push(b); else others.push(b);
@@ -201,7 +209,6 @@ export default function App() {
     const seen = new Set();
     for (const db of dragged) {
       for (const ob of others) {
-        // Center alignments
         if (Math.abs(db.cx - ob.cx) < threshold) {
           const key = `v-${ob.cx.toFixed(2)}`;
           if (!seen.has(key)) { guides.push({ axis: 'vertical', pos: ob.cx }); seen.add(key); }
@@ -210,7 +217,6 @@ export default function App() {
           const key = `h-${ob.cy.toFixed(2)}`;
           if (!seen.has(key)) { guides.push({ axis: 'horizontal', pos: ob.cy }); seen.add(key); }
         }
-        // Edge alignments
         const edgePairs = [
           [db.left, ob.left, 'vertical'], [db.right, ob.right, 'vertical'],
           [db.left, ob.right, 'vertical'], [db.right, ob.left, 'vertical'],
@@ -299,6 +305,18 @@ export default function App() {
         setNextBlockId(d.nextBlockId);
         setNextElementId(d.nextElementId);
         setNextColorIdx(d.nextColorIdx);
+        if (d.floorplanData) setFloorplanData(d.floorplanData);
+        if (d.floorplanOpacity !== undefined) setFloorplanOpacity(d.floorplanOpacity);
+        if (d.showFloorplan !== undefined) setShowFloorplan(d.showFloorplan);
+        if (d.floorplanFit) setFloorplanFit(d.floorplanFit);
+        // Restore settings
+        if (d.showPlacement !== undefined) setShowPlacement(d.showPlacement);
+        if (d.gridSize !== undefined) setGridSize(d.gridSize);
+        if (d.hideGrid !== undefined) setHideGrid(d.hideGrid);
+        if (d.snapEnabled !== undefined) setSnapEnabled(d.snapEnabled);
+        if (d.nameOrder) setNameOrder(d.nameOrder);
+        if (d.smartGuidesEnabled !== undefined) setSmartGuidesEnabled(d.smartGuidesEnabled);
+        if (d.showSeatNumbers !== undefined) setShowSeatNumbers(d.showSeatNumbers);
         setStatus('Project restored');
       }
     } catch (err) {
@@ -313,6 +331,8 @@ export default function App() {
         const data = serializeProject({
           roomWidth, roomHeight, tables, chairBlocks, venueElements,
           attendees, disabledAttendees, nextTableId, nextBlockId, nextElementId, nextColorIdx,
+          floorplanData, floorplanOpacity, showFloorplan, floorplanFit,
+          showPlacement, gridSize, hideGrid, snapEnabled, nameOrder, smartGuidesEnabled, showSeatNumbers,
         });
         localStorage.setItem(AUTOSAVE_KEY, data);
       } catch (err) {
@@ -320,7 +340,22 @@ export default function App() {
       }
     }, 1000);
     return () => clearTimeout(timer);
-  }, [roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees, disabledAttendees, nextTableId, nextBlockId, nextElementId, nextColorIdx]);
+  }, [roomWidth, roomHeight, tables, chairBlocks, venueElements, attendees, disabledAttendees, nextTableId, nextBlockId, nextElementId, nextColorIdx, floorplanData, floorplanOpacity, showFloorplan, floorplanFit, showPlacement, gridSize, hideGrid, snapEnabled, nameOrder, smartGuidesEnabled, showSeatNumbers]);
+
+  // Load floorplan Image object from base64 data
+  useEffect(() => {
+    if (!floorplanData) {
+      setFloorplanImg(null);
+      return;
+    }
+    const img = new Image();
+    img.onload = () => setFloorplanImg(img);
+    img.onerror = () => {
+      setFloorplanImg(null);
+      setStatus('Failed to load floorplan image');
+    };
+    img.src = floorplanData;
+  }, [floorplanData]);
 
   // === ACTIONS ===
 
@@ -480,6 +515,7 @@ export default function App() {
     setStatus(`Auto-assigned ${count} attendees`);
     setMenuOpen(null);
   }
+
   function clearAllAssignments() {
     saveUndo();
     setTables(prev => prev.map(t => ({ ...t, assignments: {} })));
@@ -507,6 +543,8 @@ export default function App() {
     const data = serializeProject({
       roomWidth, roomHeight, tables, chairBlocks, venueElements,
       attendees, disabledAttendees, nextTableId, nextBlockId, nextElementId, nextColorIdx,
+      floorplanData, floorplanOpacity, showFloorplan, floorplanFit,
+      showPlacement, gridSize, hideGrid, snapEnabled, nameOrder, smartGuidesEnabled, showSeatNumbers,
     });
     const blob = new Blob([data], { type: 'application/json' });
 
@@ -553,6 +591,17 @@ export default function App() {
         setNextBlockId(d.nextBlockId);
         setNextElementId(d.nextElementId);
         setNextColorIdx(d.nextColorIdx);
+        setFloorplanData(d.floorplanData || null);
+        setFloorplanOpacity(d.floorplanOpacity ?? 0.3);
+        setShowFloorplan(d.showFloorplan ?? true);
+        setFloorplanFit(d.floorplanFit || 'stretch');
+        setShowPlacement(d.showPlacement ?? true);
+        setGridSize(d.gridSize ?? 1);
+        setHideGrid(d.hideGrid ?? false);
+        setSnapEnabled(d.snapEnabled ?? true);
+        setNameOrder(d.nameOrder || 'lastFirst');
+        setSmartGuidesEnabled(d.smartGuidesEnabled ?? true);
+        setShowSeatNumbers(d.showSeatNumbers ?? false);
         setSelectedItem(null);
         setSelectedItems([]);
         setPanX(0);
@@ -577,6 +626,18 @@ export default function App() {
     setNextBlockId(1);
     setNextElementId(1);
     setNextColorIdx(0);
+    setFloorplanData(null);
+    setFloorplanImg(null);
+    setFloorplanOpacity(0.3);
+    setShowFloorplan(true);
+    setFloorplanFit('stretch');
+    setShowPlacement(true);
+    setGridSize(1);
+    setHideGrid(false);
+    setSnapEnabled(true);
+    setNameOrder('lastFirst');
+    setSmartGuidesEnabled(true);
+    setShowSeatNumbers(false);
     setSelectedItem(null);
     setSelectedItems([]);
     setRoomWidth(60);
@@ -599,6 +660,33 @@ export default function App() {
     a.click();
     URL.revokeObjectURL(url);
     setStatus('CSV exported');
+  }
+
+  // Floorplan handlers
+  function loadFloorplan(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setStatus('Please select an image file (PNG, JPG, etc.)');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      if (!confirm('This image is over 10MB and will increase project file size significantly. Continue?')) return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setFloorplanData(ev.target.result);
+      setShowFloorplan(true);
+      setStatus(`Floorplan loaded: ${file.name}`);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  }
+
+  function removeFloorplan() {
+    setFloorplanData(null);
+    setFloorplanImg(null);
+    setStatus('Floorplan removed');
   }
 
   // Add entities
@@ -632,90 +720,54 @@ export default function App() {
     setModal({ type: 'edit', entityType, entity: item });
   }
 
-  function confirmAdd(params) {
-    saveUndo();
-    const et = modal.entityType;
-    const cx = roomWidth / 2;
-    const cy = roomHeight / 2;
-
-    if (et === 'round_table') {
-      const t = createTable(nextTableId, cx, cy, {
+  function confirmAdd(entityType, params) {
+    let entity;
+    if (entityType === 'round_table') {
+      entity = createTable(nextTableId, roomWidth / 2, roomHeight / 2, {
         tableType: 'round', name: params.name, seats: Number(params.seats),
         widthFt: Number(params.diameter), heightFt: Number(params.diameter), color: params.color,
       });
-      if (currentView === 'canvas') {
-        setGhostEntity(t);
-        setGhostType('table');
-        setModal(null);
-        setStatus('Click to place (Esc to cancel)');
-        return;
-      }
-      setTables(prev => [...prev, t]);
-      setNextTableId(prev => prev + 1);
-      setNextColorIdx(prev => prev + 1);
-    } else if (et === 'rect_table') {
-      const orient = params.orientation;
-      const w = orient === 'horizontal' ? Number(params.length) : Number(params.width);
-      const h = orient === 'horizontal' ? Number(params.width) : Number(params.length);
-      const t = createTable(nextTableId, cx, cy, {
+      setGhostEntity(entity);
+      setGhostType('table');
+    } else if (entityType === 'rect_table') {
+      const orient = params.orientation || 'horizontal';
+      entity = createTable(nextTableId, roomWidth / 2, roomHeight / 2, {
         tableType: 'rect', name: params.name, seats: Number(params.seats),
-        widthFt: w, heightFt: h, color: params.color, orientation: orient,
-        endSeats: Number(params.endSeats),
+        widthFt: orient === 'horizontal' ? Number(params.length) : Number(params.width),
+        heightFt: orient === 'horizontal' ? Number(params.width) : Number(params.length),
+        color: params.color, orientation: orient, endSeats: Number(params.endSeats),
       });
-      if (currentView === 'canvas') {
-        setGhostEntity(t);
-        setGhostType('table');
-        setModal(null);
-        setStatus('Click to place (Esc to cancel)');
-        return;
-      }
-      setTables(prev => [...prev, t]);
-      setNextTableId(prev => prev + 1);
-      setNextColorIdx(prev => prev + 1);
-    } else if (et === 'chair_block') {
-      const b = createChairBlock(nextBlockId, cx, cy, {
+      setGhostEntity(entity);
+      setGhostType('table');
+    } else if (entityType === 'chair_block') {
+      entity = createChairBlock(nextBlockId, roomWidth / 2, roomHeight / 2, {
         name: params.name, rows: Number(params.rows), cols: Number(params.cols),
         spacing: params.spacing, color: params.color,
       });
-      if (currentView === 'canvas') {
-        setGhostEntity(b);
-        setGhostType('block');
-        setModal(null);
-        setStatus('Click to place (Esc to cancel)');
-        return;
-      }
-      setChairBlocks(prev => [...prev, b]);
-      setNextBlockId(prev => prev + 1);
+      setGhostEntity(entity);
+      setGhostType('block');
     } else {
-      const e = createVenueElement(nextElementId, cx, cy, {
-        elementType: et, name: params.name,
+      entity = createVenueElement(nextElementId, roomWidth / 2, roomHeight / 2, {
+        elementType: entityType, name: params.name,
         widthFt: Number(params.widthFt), heightFt: Number(params.heightFt), color: params.color,
       });
-      if (currentView === 'canvas') {
-        setGhostEntity(e);
-        setGhostType('venue');
-        setModal(null);
-        setStatus('Click to place (Esc to cancel)');
-        return;
-      }
-      setVenueElements(prev => [...prev, e]);
-      setNextElementId(prev => prev + 1);
+      setGhostEntity(entity);
+      setGhostType('venue');
     }
     setModal(null);
-    setStatus('Added');
+    setCurrentView('canvas');
+    setStatus('Click canvas to place');
   }
 
-  function confirmEdit(params) {
-    if (!modal?.entity) return;
+  function confirmEdit(entityType, entity, params) {
     saveUndo();
-    const { entity, entityType } = modal;
     if (entityType === 'round_table') {
       setTables(prev => prev.map(t => t.id === entity.id ? {
         ...t, name: params.name, seats: Number(params.seats),
         widthFt: Number(params.diameter), heightFt: Number(params.diameter), color: params.color,
       } : t));
     } else if (entityType === 'rect_table') {
-      const orient = params.orientation;
+      const orient = params.orientation || entity.orientation;
       setTables(prev => prev.map(t => t.id === entity.id ? {
         ...t, name: params.name, seats: Number(params.seats),
         widthFt: orient === 'horizontal' ? Number(params.length) : Number(params.width),
@@ -792,7 +844,6 @@ export default function App() {
     setStatus(found ? `Recalled: ${dn(attendees[attIdx])}` : 'Not seated');
   }
 
-  // Assign attendee to seat (from list view click or canvas drop)
   function assignAttendee(entityType, entityId, seatKey, attIdx) {
     if (disabledAttendees.has(attIdx)) return;
     if (assigned.has(attIdx)) { setStatus('Already assigned'); return; }
@@ -953,12 +1004,11 @@ export default function App() {
     if (resizeHit) {
       const { entity: ve, corner } = resizeHit;
       const hw = ve.widthFt / 2, hh = ve.heightFt / 2;
-      // Anchor is the opposite corner (in ft, world coords)
       const anchorMap = {
-        0: { ax: ve.x + hw, ay: ve.y + hh }, // TL → anchor BR
-        1: { ax: ve.x - hw, ay: ve.y + hh }, // TR → anchor BL
-        2: { ax: ve.x + hw, ay: ve.y - hh }, // BL → anchor TR
-        3: { ax: ve.x - hw, ay: ve.y - hh }, // BR → anchor TL
+        0: { ax: ve.x + hw, ay: ve.y + hh },
+        1: { ax: ve.x - hw, ay: ve.y + hh },
+        2: { ax: ve.x + hw, ay: ve.y - hh },
+        3: { ax: ve.x - hw, ay: ve.y - hh },
       };
       const { ax, ay } = anchorMap[corner];
       saveUndo();
@@ -980,9 +1030,7 @@ export default function App() {
           return [...prev, [type, item]];
         });
       } else if (isInMulti) {
-        // Clicked on item already in multi-selection — start multi-drag, keep selection
         const origPositions = selectedItems.map(([t, i]) => {
-          // Look up latest entity from state
           let latest = i;
           if (t === 'table') latest = tables.find(e => e.id === i.id) || i;
           else if (t === 'block') latest = chairBlocks.find(e => e.id === i.id) || i;
@@ -998,7 +1046,6 @@ export default function App() {
         setDragging(true);
       }
     } else {
-      // Empty space — start potential pan
       panRef.current = { active: true, startX: e.clientX, startY: e.clientY, origPanX: panX, origPanY: panY, hasMoved: false };
       setDragging(true);
     }
@@ -1039,7 +1086,6 @@ export default function App() {
       const MIN_SIZE = 2;
       let newW = Math.max(MIN_SIZE, Math.abs(worldX - anchorX));
       let newH = Math.max(MIN_SIZE, Math.abs(worldY - anchorY));
-      // Snap dimensions to grid if enabled
       if (snapEnabled && gridSize > 0) {
         newW = Math.max(MIN_SIZE, Math.round(newW / gridSize) * gridSize);
         newH = Math.max(MIN_SIZE, Math.round(newH / gridSize) * gridSize);
@@ -1050,25 +1096,9 @@ export default function App() {
       return;
     }
 
-    // Handle cursor for resize handle hover (only when not dragging)
-    if (!dragging && !panRef.current.active) {
-      const rh = resizeHandleHitTest(x, y, canvasState);
-      if (rh) {
-        setResizeCursor(rh.corner === 0 || rh.corner === 3 ? 'nwse-resize' : 'nesw-resize');
-      } else if (resizeCursor) {
-        setResizeCursor(null);
-      }
-    }
-
-    // Multi-select drag
+    // Multi-drag
     if (dragging && dragRef.current.multiDrag) {
       const items = dragRef.current.multiDrag;
-      const anyLocked = items.some(m => {
-        if (m.type === 'table') return tables.find(t => t.id === m.id)?.locked;
-        if (m.type === 'block') return chairBlocks.find(b => b.id === m.id)?.locked;
-        return venueElements.find(v => v.id === m.id)?.locked;
-      });
-      if (anyLocked) return;
       const dx = pxToFt(x - dragRef.current.startX);
       const dy = pxToFt(y - dragRef.current.startY);
       if (!dragRef.current.hasMoved && (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5)) {
@@ -1079,18 +1109,17 @@ export default function App() {
         const tableUpdates = new Map();
         const blockUpdates = new Map();
         const venueUpdates = new Map();
-        for (const m of items) {
-          const nx = Math.max(0, Math.min(roomWidth, m.origX + dx));
-          const ny = Math.max(0, Math.min(roomHeight, m.origY + dy));
-          if (m.type === 'table') tableUpdates.set(m.id, { x: nx, y: ny });
-          else if (m.type === 'block') blockUpdates.set(m.id, { x: nx, y: ny });
-          else venueUpdates.set(m.id, { x: nx, y: ny });
+        for (const item of items) {
+          const newX = Math.max(0, Math.min(roomWidth, item.origX + dx));
+          const newY = Math.max(0, Math.min(roomHeight, item.origY + dy));
+          if (item.type === 'table') tableUpdates.set(item.id, { x: newX, y: newY });
+          else if (item.type === 'block') blockUpdates.set(item.id, { x: newX, y: newY });
+          else venueUpdates.set(item.id, { x: newX, y: newY });
         }
         if (tableUpdates.size) setTables(prev => prev.map(t => tableUpdates.has(t.id) ? { ...t, ...tableUpdates.get(t.id) } : t));
         if (blockUpdates.size) setChairBlocks(prev => prev.map(b => blockUpdates.has(b.id) ? { ...b, ...blockUpdates.get(b.id) } : b));
         if (venueUpdates.size) setVenueElements(prev => prev.map(v => venueUpdates.has(v.id) ? { ...v, ...venueUpdates.get(v.id) } : v));
 
-        // Smart guides for multi-drag
         if (smartGuidesEnabled) {
           setSmartGuides(computeSmartGuides(items));
         }
@@ -1117,7 +1146,6 @@ export default function App() {
         else if (type === 'block') setChairBlocks(prev => prev.map(b => b.id === item.id ? { ...b, x: snapped.x, y: snapped.y } : b));
         else setVenueElements(prev => prev.map(el => el.id === item.id ? { ...el, x: snapped.x, y: snapped.y } : el));
 
-        // Smart guides for single drag
         if (smartGuidesEnabled) {
           setSmartGuides(computeSmartGuides([{ type, id: item.id }]));
         }
@@ -1132,7 +1160,6 @@ export default function App() {
       panRef.current = { active: false, startX: 0, startY: 0, origPanX: 0, origPanY: 0, hasMoved: false };
       setDragging(false);
       if (!didPan) {
-        // Clean click on empty space — deselect
         setSelectedItem(null);
         setSelectedItems([]);
       }
@@ -1199,7 +1226,6 @@ export default function App() {
   }
 
   // Wheel handler — must be non-passive to preventDefault browser zoom
-  // Uses ref to avoid stale closures for zoom-to-cursor math
   useEffect(() => {
     zoomParamsRef.current = { scale, panX, panY, canvasSize, roomWidth, roomHeight, zoomLevel };
   }, [scale, panX, panY, canvasSize, roomWidth, roomHeight, zoomLevel]);
@@ -1211,23 +1237,18 @@ export default function App() {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         const { scale: curScale, panX: curPanX, panY: curPanY, canvasSize: cs, roomWidth: rw, roomHeight: rh, zoomLevel: curZoom } = zoomParamsRef.current;
-        // Mouse position in canvas
         const rect = el.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
-        // World point under cursor (in ft)
         const curOffX = (cs.w - rw * curScale) / 2 + curPanX;
         const curOffY = (cs.h - rh * curScale) / 2 + curPanY;
         const worldX = (mx - curOffX) / curScale;
         const worldY = (my - curOffY) / curScale;
-        // New zoom level
         const newZoom = e.deltaY < 0
           ? Math.min(400, curZoom === 100 ? 125 : curZoom + 25)
           : Math.max(25, curZoom > 100 ? curZoom - 25 : curZoom === 100 ? 75 : curZoom - 25);
-        // New scale
         const base = Math.max(2, Math.min((cs.w - 80) / rw, (cs.h - 80) / rh));
         const newScale = newZoom === 100 ? base : base * newZoom / 100;
-        // Adjust pan so world point stays under cursor
         const newBaseOffX = (cs.w - rw * newScale) / 2;
         const newBaseOffY = (cs.h - rh * newScale) / 2;
         const newPanX = mx - worldX * newScale - newBaseOffX;
@@ -1235,46 +1256,58 @@ export default function App() {
         setZoomLevel(newZoom);
         setPanX(newPanX);
         setPanY(newPanY);
-      } else {
-        e.preventDefault();
-        setPanX(prev => prev - e.deltaX);
-        setPanY(prev => prev - e.deltaY);
       }
     };
     el.addEventListener('wheel', handler, { passive: false });
     return () => el.removeEventListener('wheel', handler);
   }, [currentView]);
 
-  // Drag attendee from list
-  function handleAttendeeDragStart(e, attIdx) {
-    if (disabledAttendees.has(attIdx) || assigned.has(attIdx)) return;
-    setDragAttendee(attIdx);
-    setDragGhostPos({ x: e.clientX, y: e.clientY });
-  }
+  // Filtered attendees
+  const filteredAttendees = useMemo(() => {
+    const term = search.toLowerCase();
+    let list = attendees.map((a, i) => ({ last: a[0], first: a[1], idx: i }))
+      .filter(a => !term || `${a.last} ${a.first}`.toLowerCase().includes(term));
+    if (attendeeListMode === 'unassigned-first') {
+      list.sort((a, b) => {
+        const aActive = !assigned.has(a.idx) && !disabledAttendees.has(a.idx);
+        const bActive = !assigned.has(b.idx) && !disabledAttendees.has(b.idx);
+        if (aActive !== bActive) return aActive ? -1 : 1;
+        return 0;
+      });
+    }
+    return list;
+  }, [attendees, search, assigned, disabledAttendees, attendeeListMode]);
+
+  // Live entity from current state (for toolbar display)
+  const liveSelectedEntity = useMemo(() => {
+    if (!selectedItem) return null;
+    const [type, ref] = selectedItem;
+    if (type === 'table') return tables.find(t => t.id === ref.id) || null;
+    if (type === 'block') return chairBlocks.find(b => b.id === ref.id) || null;
+    return venueElements.find(e => e.id === ref.id) || null;
+  }, [selectedItem, tables, chairBlocks, venueElements]);
 
   // Export image
-  async function exportImage(opts) {
-    const { resolution, includeGrid, includeNames, content } = opts;
+  async function exportImage(params) {
+    const { resolution, includeGrid, includeNames, content } = params;
     const pxPerFt = resolution === 'ultra' ? 75 : resolution === 'high' ? 50 : 30;
-    const padding = 40;
-
-    const roomW = roomWidth * pxPerFt;
-    const roomH = roomHeight * pxPerFt;
-
-    const allEntities = [
-      ...tables.map(t => ({ entity: t, type: 'table', name: t.name || `Table ${t.id}`, total: getTableTotalSeats(t) })),
-      ...chairBlocks.map(b => ({ entity: b, type: 'block', name: b.name || `Section ${b.id}`, total: getBlockTotalSeats(b) })),
-    ];
-
     const showCanvas = content !== 'summary';
     const showSummary = content !== 'canvas';
+    const roomW = roomWidth * pxPerFt;
+    const roomH = roomHeight * pxPerFt;
+    const padding = Math.round(20 * pxPerFt / 15);
 
-    const colWidth = Math.round(260 * pxPerFt / 15);
-    const lineH = Math.round(20 * pxPerFt / 15);
-    const headerH = Math.round(36 * pxPerFt / 15);
+    const allEntities = [
+      ...tables.map(t => ({ entity: t, type: 'table', total: getTableTotalSeats(t) })),
+      ...chairBlocks.map(b => ({ entity: b, type: 'block', total: b.rows * b.cols })),
+    ];
+
+    const colWidth = Math.round(200 * pxPerFt / 15);
     const colGap = Math.round(20 * pxPerFt / 15);
-    const summaryPadding = Math.round(40 * pxPerFt / 15);
-    const titleH = showSummary ? Math.round(50 * pxPerFt / 15) : 0;
+    const headerH = Math.round(35 * pxPerFt / 15);
+    const lineH = Math.round(22 * pxPerFt / 15);
+    const titleH = Math.round(50 * pxPerFt / 15);
+    const summaryPadding = showCanvas ? padding : Math.round(50 * pxPerFt / 15);
     const fontScale = pxPerFt / 15;
 
     let summaryH = 0;
@@ -1285,7 +1318,6 @@ export default function App() {
         summaryContentW = summaryPadding * 2 + idealCols * colWidth + (idealCols - 1) * colGap;
       }
       const cols = Math.max(1, Math.floor((summaryContentW - summaryPadding * 2 + colGap) / (colWidth + colGap)));
-
       const colHeights = new Array(cols).fill(0);
       allEntities.forEach(e => {
         const h = headerH + e.total * lineH + 16;
@@ -1316,6 +1348,7 @@ export default function App() {
         showPlacement: includeNames, gridSize,
         hideGrid: !includeGrid,
         scale: pxPerFt, offsetX: padding, offsetY: padding,
+        floorplanImg, floorplanOpacity, showFloorplan, floorplanFit,
       };
       drawCanvas(ctx, exportState, totalW, showCanvas ? roomH + padding * 2 : 0);
     }
@@ -1324,76 +1357,61 @@ export default function App() {
       const summaryTop = showCanvas ? roomH + padding * 2 : 0;
       const cols = Math.max(1, Math.floor((summaryContentW - summaryPadding * 2 + colGap) / (colWidth + colGap)));
 
-      // Title
-      ctx.fillStyle = '#e8e8e8';
+      ctx.fillStyle = '#e2b340';
       ctx.font = `bold ${Math.round(20 * fontScale)}px "DM Sans", sans-serif`;
-      ctx.textAlign = 'center';
+      ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
-      ctx.fillText('Seating Summary', totalW / 2, summaryTop + summaryPadding);
+      ctx.fillText('Seating Assignments', summaryPadding, summaryTop + Math.round(12 * fontScale));
 
-      // Pack entities into columns
       const colHeights = new Array(cols).fill(0);
-      const colAssignments = allEntities.map(e => {
+      allEntities.forEach(({ entity: e, type, total }) => {
         const minCol = colHeights.indexOf(Math.min(...colHeights));
-        const y = colHeights[minCol];
-        colHeights[minCol] += headerH + e.total * lineH + 16;
-        return { ...e, col: minCol, y };
-      });
+        const colX = summaryPadding + minCol * (colWidth + colGap);
+        const colY = summaryTop + titleH + colHeights[minCol];
 
-      colAssignments.forEach(({ entity, type, name, total, col, y: relY }) => {
-        const colX = (totalW - (cols * colWidth + (cols - 1) * colGap)) / 2 + col * (colWidth + colGap);
-        let curY = summaryTop + summaryPadding + titleH + relY;
+        ctx.fillStyle = e.color || '#3a4a6a';
+        ctx.globalAlpha = 0.15;
+        ctx.fillRect(colX, colY, colWidth, headerH);
+        ctx.globalAlpha = 1;
 
-        // Header
-        ctx.fillStyle = entity.color || '#8B4513';
-        ctx.fillRect(colX, curY, colWidth, headerH);
-        const filled = type === 'table'
-          ? Object.keys(entity.assignments).length
-          : Object.keys(entity.assignments).length;
-        const c = (entity.color || '').replace('#', '');
-        const lum = c.length === 6 ? (parseInt(c.substring(0,2),16)*299 + parseInt(c.substring(2,4),16)*587 + parseInt(c.substring(4,6),16)*114) / 1000 : 0;
-        ctx.fillStyle = lum > 160 ? '#000' : '#fff';
-        ctx.font = `bold ${Math.round(14 * fontScale)}px "DM Sans", sans-serif`;
+        const name = e.name || `${type === 'table' ? 'Table' : 'Section'} ${e.id}`;
+        ctx.fillStyle = '#e8e8e8';
+        ctx.font = `bold ${Math.round(13 * fontScale)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText(name, colX + Math.round(10 * fontScale), curY + headerH / 2 - 2);
-        ctx.font = `${Math.round(12 * fontScale)}px "DM Sans", sans-serif`;
+        ctx.fillText(name, colX + Math.round(10 * fontScale), colY + headerH / 2);
+
+        const filled = Object.keys(e.assignments).length;
+        ctx.fillStyle = '#6b7a90';
+        ctx.font = `${Math.round(11 * fontScale)}px "DM Sans", sans-serif`;
         ctx.textAlign = 'right';
-        ctx.fillText(`${filled}/${total}`, colX + colWidth - Math.round(10 * fontScale), curY + headerH / 2 - 2);
-        curY += headerH;
+        ctx.fillText(`${filled}/${total}`, colX + colWidth - Math.round(10 * fontScale), colY + headerH / 2);
 
-        // Seats
-        for (let s = 0; s < total; s++) {
-          let seatKey, occ, attIdx;
-          if (type === 'table') {
-            seatKey = s;
-            occ = s in entity.assignments;
-            attIdx = occ ? entity.assignments[s] : null;
-          } else {
-            const r = Math.floor(s / entity.cols);
-            const c = s % entity.cols;
-            seatKey = `${r}-${c}`;
-            occ = seatKey in entity.assignments;
-            attIdx = occ ? entity.assignments[seatKey] : null;
-          }
+        let seatKeys = [];
+        if (type === 'table') {
+          for (let i = 0; i < total; i++) seatKeys.push({ key: i, label: `${i + 1}` });
+        } else {
+          for (let r = 0; r < e.rows; r++)
+            for (let c = 0; c < e.cols; c++)
+              seatKeys.push({ key: `${r}-${c}`, label: `${r}-${c}` });
+        }
 
-          const seatY = curY + s * lineH;
-
-          if (s % 2 === 0) {
-            ctx.fillStyle = 'rgba(255,255,255,0.03)';
-            ctx.fillRect(colX, seatY, colWidth, lineH);
-          }
-
-          ctx.fillStyle = '#6b7a90';
-          ctx.font = `${Math.round(11 * fontScale)}px "DM Sans", sans-serif`;
-          ctx.textAlign = 'left';
+        seatKeys.forEach((seat, si) => {
+          const seatY = colY + headerH + si * lineH;
+          ctx.fillStyle = '#4a5568';
+          ctx.font = `${Math.round(10 * fontScale)}px "DM Sans", sans-serif`;
+          ctx.textAlign = 'right';
           ctx.textBaseline = 'middle';
-          ctx.fillText(`${s + 1}.`, colX + Math.round(10 * fontScale), seatY + lineH / 2);
+          ctx.fillText(seat.label, colX + Math.round(26 * fontScale), seatY + lineH / 2);
 
-          if (occ && attIdx != null && attIdx < attendees.length) {
-            ctx.fillStyle = '#e8e8e8';
-            ctx.font = `${Math.round(12 * fontScale)}px "DM Sans", sans-serif`;
-            ctx.fillText(nameOrder === 'firstLast'
+          const attIdx = e.assignments[seat.key];
+          if (attIdx !== undefined && attIdx < attendees.length) {
+            ctx.fillStyle = '#48bb78';
+            ctx.font = `${Math.round(11 * fontScale)}px "DM Sans", sans-serif`;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            const firstFirst = nameOrder === 'firstLast';
+            ctx.fillText(firstFirst
               ? `${attendees[attIdx][1]}, ${attendees[attIdx][0]}`
               : `${attendees[attIdx][0]}, ${attendees[attIdx][1]}`, colX + Math.round(32 * fontScale), seatY + lineH / 2);
           } else {
@@ -1401,7 +1419,9 @@ export default function App() {
             ctx.font = `italic ${Math.round(11 * fontScale)}px "DM Sans", sans-serif`;
             ctx.fillText('— Empty —', colX + Math.round(32 * fontScale), seatY + lineH / 2);
           }
-        }
+        });
+
+        colHeights[minCol] += headerH + total * lineH + 16;
       });
     }
 
@@ -1437,74 +1457,47 @@ export default function App() {
   const totalAssigned = assigned.size;
   const unassignedCount = attendees.length - totalAssigned;
 
-  // Live entity from current state (for toolbar display)
-  const liveSelectedEntity = useMemo(() => {
-    if (!selectedItem) return null;
-    const [type, ref] = selectedItem;
-    if (type === 'table') return tables.find(t => t.id === ref.id) || null;
-    if (type === 'block') return chairBlocks.find(b => b.id === ref.id) || null;
-    return venueElements.find(e => e.id === ref.id) || null;
-  }, [selectedItem, tables, chairBlocks, venueElements]);
-
-  const filteredAttendees = useMemo(() => {
-    const term = search.toLowerCase();
-    let list = attendees.map((a, i) => ({ last: a[0], first: a[1], idx: i }))
-      .filter(a => !term || `${a.last} ${a.first}`.toLowerCase().includes(term));
-    if (attendeeListMode === 'unassigned-first') {
-      list.sort((a, b) => {
-        const aActive = !assigned.has(a.idx) && !disabledAttendees.has(a.idx);
-        const bActive = !assigned.has(b.idx) && !disabledAttendees.has(b.idx);
-        if (aActive !== bActive) return aActive ? -1 : 1;
-        return 0;
-      });
-    }
-    return list;
-  }, [attendees, search, attendeeListMode, assigned, disabledAttendees]);
-
   // === RENDER ===
   return (
     <>
-      {/* Global drag ghost */}
-      {dragAttendee !== null && dragGhostPos && (
-        <div className="drag-ghost" style={{ left: dragGhostPos?.x, top: dragGhostPos?.y }}>
-          {dn(attendees[dragAttendee])}
-        </div>
-      )}
-      {popupDragSeat && dragGhostPos && (
-        <div className="drag-ghost" style={{ left: dragGhostPos?.x, top: dragGhostPos?.y }}>
-          {dn(attendees[popupDragSeat.attIdx])}
-        </div>
-      )}
-
-      {/* TOP BAR */}
+      {/* TOPBAR */}
       <div className="topbar">
         <div className="topbar-section" style={{ position: 'relative' }}>
           <button className="btn btn-sm" onClick={() => setMenuOpen(menuOpen === 'file' ? null : 'file')}>File ▾</button>
           {menuOpen === 'file' && (
             <div className="menu-dropdown">
-              <button className="menu-item" onClick={newProject}>New Project</button>
-              <button className="menu-item" onClick={saveProject}>Save Project</button>
-              <button className="menu-item" onClick={() => fileInputRef.current?.click()}>Load Project</button>
+              <button className="menu-item" onClick={() => { setMenuOpen(null); newProject(); }}>New Project</button>
+              <button className="menu-item" onClick={() => { setMenuOpen(null); saveProject(); }}>Save Project</button>
+              <button className="menu-item" onClick={() => { setMenuOpen(null); fileInputRef.current?.click(); }}>Load Project</button>
+              <div className="menu-divider" />
+              <button className="menu-item" onClick={() => { setMenuOpen(null); floorplanInputRef.current?.click(); }}>
+                {floorplanData ? 'Replace Floorplan' : 'Upload Floorplan'}
+              </button>
+              {floorplanData && (
+                <button className="menu-item" style={{ color: 'var(--danger)' }} onClick={() => { setMenuOpen(null); removeFloorplan(); }}>Remove Floorplan</button>
+              )}
               <div className="menu-divider" />
               <button className="menu-item" onClick={() => { setMenuOpen(null); setModal({ type: 'export' }); }}>Export Image</button>
             </div>
           )}
         </div>
-
         <div className="topbar-section" style={{ position: 'relative' }}>
           <button className="btn btn-sm" onClick={() => setMenuOpen(menuOpen === 'tools' ? null : 'tools')}>Tools ▾</button>
           {menuOpen === 'tools' && (
             <div className="menu-dropdown">
-              <button className="menu-item" onClick={() => { setMenuOpen(null); setModal({ type: 'confirm', message: 'Clear all seat assignments? This will unassign every attendee from every table and block.', onConfirm: () => { clearAllAssignments(); setModal(null); } }); }}>Clear All Assignments</button>
-              <div className="menu-divider" />
               <div className="menu-label">Auto-Assign</div>
-              <button className="menu-item" onClick={() => autoAssign('alpha')}>Alphabetical</button>
-              <button className="menu-item" onClick={() => autoAssign('fill')}>Fill in Order</button>
-              <button className="menu-item" onClick={() => autoAssign('random')}>Random</button>
+              <button className="menu-item" onClick={() => { autoAssign('alpha'); }}>Alphabetical</button>
+              <button className="menu-item" onClick={() => { autoAssign('fill'); }}>Fill in Order</button>
+              <button className="menu-item" onClick={() => { autoAssign('random'); }}>Random</button>
+              <div className="menu-divider" />
+              <button className="menu-item" style={{ color: 'var(--danger)' }} onClick={() => {
+                setMenuOpen(null);
+                setModal({ type: 'confirm', title: 'Clear All Assignments', message: 'Remove all seat assignments?',
+                  onConfirm: () => { clearAllAssignments(); setModal(null); } });
+              }}>Clear All Assignments</button>
             </div>
           )}
         </div>
-
         <div className="topbar-section" style={{ position: 'relative' }}>
           <button className="btn btn-sm" onClick={() => setMenuOpen(menuOpen === 'settings' ? null : 'settings')}>Settings ▾</button>
           {menuOpen === 'settings' && (
@@ -1529,6 +1522,26 @@ export default function App() {
                 <input type="checkbox" checked={showSeatNumbers} readOnly />
                 Show Seat Numbers
               </div>
+              {floorplanData && (
+                <>
+                  <div className="menu-divider" />
+                  <div className="menu-label">Floorplan</div>
+                  <div className="menu-toggle" onClick={e => { e.stopPropagation(); setShowFloorplan(!showFloorplan); }}>
+                    <input type="checkbox" checked={showFloorplan} readOnly />
+                    Show Floorplan
+                  </div>
+                  <div className="menu-slider" onClick={e => e.stopPropagation()}>
+                    <span className="menu-slider-label">Opacity</span>
+                    <input type="range" min="0" max="100" value={Math.round(floorplanOpacity * 100)}
+                      onChange={e => setFloorplanOpacity(Number(e.target.value) / 100)} />
+                    <span className="menu-slider-value">{Math.round(floorplanOpacity * 100)}%</span>
+                  </div>
+                  <div className="menu-toggle" onClick={e => { e.stopPropagation(); setFloorplanFit(floorplanFit === 'stretch' ? 'contain' : 'stretch'); }}>
+                    <input type="checkbox" checked={floorplanFit === 'contain'} readOnly />
+                    Maintain Aspect Ratio
+                  </div>
+                </>
+              )}
               <div className="menu-divider" />
               <div className="menu-toggle" onClick={e => { e.stopPropagation(); setNameOrder(nameOrder === 'firstLast' ? 'lastFirst' : 'firstLast'); }}>
                 <input type="checkbox" checked={nameOrder === 'firstLast'} readOnly />
@@ -1641,39 +1654,39 @@ export default function App() {
         {/* LEFT PANEL */}
         <div className={`left-panel ${!panelOpen ? 'collapsed' : ''}`}>
           {!panelOpen ? (
-            <div className="collapsed-strip">
-              <button className="btn btn-icon btn-sm" onClick={() => setPanelOpen(true)}>►</button>
-              {'ATTENDEES'.split('').map((c, i) => <span key={i}>{c}</span>)}
+            <div className="collapsed-strip" style={{ cursor: 'pointer' }} onClick={() => setPanelOpen(true)}>
+              <button className="btn btn-sm" style={{ padding: '1px 6px', fontSize: 10, marginBottom: 6 }} onClick={(e) => { e.stopPropagation(); setPanelOpen(true); }}>▶</button><span>A</span><span>t</span><span>t</span><span>e</span><span>n</span><span>d</span><span>e</span><span>e</span><span>s</span>
             </div>
           ) : (
             <>
               <div className="panel-header">
-                <button className="btn btn-icon btn-sm" onClick={() => setPanelOpen(false)}>◄</button>
                 <h3>Attendees</h3>
-                <span className="count">({attendees.length})</span>
+                <span className="count">{attendees.length}</span>
+                <button className="btn btn-sm" style={{ padding: '1px 6px', fontSize: 10 }} onClick={() => setPanelOpen(false)}>◀</button>
               </div>
               <div className="panel-content">
                 <div className="search-box">
                   <span className="search-icon">🔍</span>
-                  <input type="text" placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} />
+                  <input type="text" placeholder="Search attendees..." value={search} onChange={e => setSearch(e.target.value)} />
                   <button className={`btn btn-sm sort-mode-btn ${attendeeListMode === 'unassigned-first' ? 'active' : ''}`}
-                    onClick={() => setAttendeeListMode(m => m === 'all' ? 'unassigned-first' : 'all')}
-                    title={attendeeListMode === 'all' ? 'Sort: show unassigned first' : 'Sort: all alphabetical'}>
-                    {attendeeListMode === 'all' ? 'A-Z' : '⬆ A-Z'}
-                  </button>
+                    onClick={() => setAttendeeListMode(attendeeListMode === 'all' ? 'unassigned-first' : 'all')}>A-Z</button>
                 </div>
                 <div className="attendee-list">
                   {filteredAttendees.map(a => {
                     const isAssigned = assigned.has(a.idx);
                     const isDisabled = disabledAttendees.has(a.idx);
                     const isSelected = selectedAttendee === a.idx;
+                    const isDragging = dragAttendee === a.idx;
                     return (
                       <div key={a.idx}
-                        className={`attendee-item ${isAssigned ? 'assigned' : ''} ${isDisabled ? 'disabled' : ''} ${isSelected ? 'selected' : ''}`}
+                        className={`attendee-item ${isSelected ? 'selected' : ''} ${isAssigned ? 'assigned' : ''} ${isDisabled ? 'disabled' : ''} ${isDragging ? 'dragging' : ''}`}
                         onMouseDown={e => {
-                          if (e.button !== 0) return;
+                          e.preventDefault();
                           setSelectedAttendee(a.idx);
-                          if (!isAssigned && !isDisabled) handleAttendeeDragStart(e, a.idx);
+                          if (!isDisabled && !isAssigned) {
+                            setDragAttendee(a.idx);
+                            setDragGhostPos({ x: e.clientX, y: e.clientY });
+                          }
                         }}
                         onDragStart={e => e.preventDefault()}
                         title={isAssigned ? 'Assigned' : isDisabled ? 'Disabled' : 'Click to select, drag to seat'}>
@@ -1719,42 +1732,24 @@ export default function App() {
               onMouseMove={handleCanvasMouseMove}
               onMouseUp={handleCanvasMouseUp}
               onDoubleClick={handleCanvasDoubleClick}
-              onContextMenu={handleCanvasContextMenu} />
-            {/* TABLE POPUP OVERLAY */}
+              onContextMenu={handleCanvasContextMenu}
+            />
             {tablePopupOpen && selectedItem && (selectedItem[0] === 'table' || selectedItem[0] === 'block') && (
               <TablePopup
-                entity={selectedItem[0] === 'table'
-                  ? tables.find(t => t.id === selectedItem[1].id)
-                  : chairBlocks.find(b => b.id === selectedItem[1].id)}
+                entity={selectedItem[0] === 'table' ? tables.find(t => t.id === selectedItem[1].id) : chairBlocks.find(b => b.id === selectedItem[1].id)}
                 entityType={selectedItem[0]}
-                attendees={attendees}
-                disabledAttendees={disabledAttendees}
-                assigned={assigned}
-                dragAttendee={dragAttendee}
-                popupDragSeat={popupDragSeat}
-                nameOrder={nameOrder}
+                attendees={attendees} disabledAttendees={disabledAttendees} assigned={assigned}
+                dragAttendee={dragAttendee} popupDragSeat={popupDragSeat} nameOrder={nameOrder}
                 onClose={() => setTablePopupOpen(false)}
                 onUnassign={(seatKey) => unassignSeat(selectedItem[0], selectedItem[1].id, seatKey)}
                 onRename={(newName) => renameEntity(selectedItem[0], selectedItem[1].id, newName)}
-                onSeatDragStart={(seatKey, attIdx, e) => {
-                  setPopupDragSeat({ entityType: selectedItem[0], entityId: selectedItem[1].id, seatKey, attIdx });
-                  setDragGhostPos({ x: e.clientX, y: e.clientY });
+                onSeatDragStart={(seatKey) => {
+                  setPopupDragSeat({ entityType: selectedItem[0], entityId: selectedItem[1].id, seatKey });
                 }}
-                onSeatDrop={(seatKey) => {
-                  if (dragAttendee !== null) {
-                    forceAssignSeat(selectedItem[0], selectedItem[1].id, seatKey, dragAttendee);
-                    setDragAttendee(null);
-                    setDragGhostPos(null);
-                  } else if (popupDragSeat) {
-                    if (popupDragSeat.entityId === selectedItem[1].id && popupDragSeat.entityType === selectedItem[0]) {
-                      swapSeats(selectedItem[0], selectedItem[1].id, popupDragSeat.seatKey, seatKey);
-                    } else {
-                      moveSeatToSeat(popupDragSeat.entityType, popupDragSeat.entityId, popupDragSeat.seatKey,
-                        selectedItem[0], selectedItem[1].id, seatKey);
-                    }
-                    setPopupDragSeat(null);
-                    setDragGhostPos(null);
-                  }
+                onSeatDrop={(srcKey, dstKey) => {
+                  swapSeats(selectedItem[0], selectedItem[1].id, srcKey, dstKey);
+                  setPopupDragSeat(null);
+                  setDragGhostPos(null);
                 }}
                 onDropNextAvailable={() => {
                   if (dragAttendee !== null) {
@@ -1809,8 +1804,16 @@ export default function App() {
       {/* STATUS BAR */}
       <div className="status-bar">
         <input type="file" accept=".json,.seating" ref={fileInputRef} style={{ display: 'none' }} onChange={loadProject} />
+        <input type="file" accept="image/*" ref={floorplanInputRef} style={{ display: 'none' }} onChange={loadFloorplan} />
         <span className="status-text">{status}</span>
       </div>
+
+      {/* DRAG GHOST */}
+      {dragGhostPos && (dragAttendee !== null || popupDragSeat) && (
+        <div className="drag-ghost" style={{ left: dragGhostPos.x, top: dragGhostPos.y }}>
+          {dragAttendee !== null && attendees[dragAttendee] ? dn(attendees[dragAttendee]) : 'Moving...'}
+        </div>
+      )}
 
       {/* MODAL */}
       {modal && modal.type !== 'help' && <Modal modal={modal} onClose={() => setModal(null)} onConfirmAdd={confirmAdd} onConfirmEdit={confirmEdit} onConfirmAddAttendee={confirmAddAttendee} onExport={exportImage} />}
@@ -1829,9 +1832,9 @@ export default function App() {
               <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>3. Load Your Guest List</strong><br />
                 Click <strong>Load CSV</strong> in the left panel. Your CSV should have two columns: one name per column, one guest per row (e.g. <code style={{ background: 'var(--bg-tertiary)', padding: '1px 4px', borderRadius: 3 }}>Smith, John</code>). Use <strong>Swap Name Order</strong> in Settings if names appear reversed.</p>
               <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>4. Assign Seats</strong><br />
-                <strong>Drag & drop</strong> an attendee from the left panel onto a seat or table on the canvas. Or switch to <strong>List View</strong> and click empty seats to assign the selected attendee. Use <strong>Tools → Auto-Assign</strong> to fill seats automatically.</p>
-              <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>5. Arrange Your Layout</strong><br />
-                Drag tables to reposition. Double-click to edit properties. Select and use the toolbar to <strong>Rotate</strong>, <strong>Copy</strong>, <strong>Lock</strong>, or <strong>Delete</strong>. Hold <strong>Ctrl+click</strong> to multi-select, then drag to move as a group.</p>
+                <strong>Drag & drop</strong> an attendee from the left panel onto a seat or table on the canvas. Or switch to <strong>List View</strong>, select an attendee, and click an empty seat. Use <strong>Tools → Auto-Assign</strong> to bulk-fill.</p>
+              <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>5. Edit Entities</strong><br />
+                <strong>Double-click</strong> a table on the canvas, or select it and click <strong>Edit</strong> in the toolbar. In the Table Popup, click the name to rename. Use the <strong>color dot</strong> in List View cards to change colors.</p>
               <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>6. Navigate the Canvas</strong><br />
                 <strong>Ctrl+scroll</strong> to zoom in/out (zooms toward your cursor). Drag empty space to pan. Click <strong>Fit</strong> to reset the view.</p>
               <p style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent)' }}>7. Save & Export</strong><br />
@@ -1900,51 +1903,55 @@ function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned
         onMouseEnter={() => { if (isDragging) setDragOverHeader(true); }}
         onMouseLeave={() => setDragOverHeader(false)}
         onMouseUp={handleHeaderDrop}>
-        {editingName && !isDragging ? (
-          <input ref={nameInputRef} className="table-popup-name-input" value={nameValue}
+        {editingName ? (
+          <input className="table-popup-name-input" ref={nameInputRef} value={nameValue}
             onChange={e => setNameValue(e.target.value)}
             onBlur={commitName}
-            onKeyDown={e => { if (e.key === 'Enter') commitName(); if (e.key === 'Escape') setEditingName(false); }}
-            autoFocus />
+            onKeyDown={e => { if (e.key === 'Enter') commitName(); if (e.key === 'Escape') setEditingName(false); }} />
         ) : (
-          <span className="table-popup-title" onClick={() => { if (!isDragging) startEditing(); }} title="Click to rename">
-            {displayName}
-          </span>
+          <span className="table-popup-title" onClick={startEditing}>{displayName}</span>
         )}
         <span className="table-popup-count">{filledCount}/{seatKeys.length}</span>
-        <button className="btn btn-icon btn-sm table-popup-close" onClick={onClose}>✕</button>
+        <button className="btn btn-sm table-popup-close" onClick={onClose}>✕</button>
       </div>
       <div className="table-popup-seats">
-        {seatKeys.map(key => {
+        {seatKeys.map((key, idx) => {
           const attIdx = entity.assignments[key];
-          const isOccupied = attIdx !== undefined;
-          const att = isOccupied ? attendees[attIdx] : null;
-          const isDropTarget = dragOverSeat === key && isDragging;
+          const occ = attIdx !== undefined;
+          const seatLabel = entityType === 'table' ? `${key + 1}` : key;
+          const isDropTarget = dragOverSeat === key && !occ;
 
           return (
-            <div key={key}
-              className={`table-popup-seat ${isOccupied ? 'occupied' : 'empty'} ${isDropTarget ? 'drop-target' : ''} ${key === 0 || key === '0-0' ? 'seat-one' : ''}`}
-              onMouseEnter={() => { if (isDragging) setDragOverSeat(key); }}
+            <div key={key} className={`table-popup-seat ${idx === 0 ? 'seat-one' : ''} ${isDropTarget ? 'drop-target' : ''}`}
+              onMouseEnter={() => { if (isDragging && !occ) setDragOverSeat(key); }}
               onMouseLeave={() => setDragOverSeat(null)}
               onMouseUp={() => {
-                if (isDragging) {
-                  onSeatDrop(key);
-                  setDragOverSeat(null);
+                if (dragAttendee !== null && !occ) {
+                  onSeatDrop && onSeatDrop(null, key);
+                  // Actually handled by parent via assignAttendee
                 }
+                if (popupDragSeat && !occ) {
+                  onSeatDrop(popupDragSeat.seatKey, key);
+                }
+                setDragOverSeat(null);
               }}>
-              <span className="seat-num">{entityType === 'table' ? Number(key) + 1 : key}</span>
-              {isOccupied ? (
+              <span className="seat-num">{idx === 0 ? '★1' : seatLabel}</span>
+              {occ ? (
                 <>
                   <span className="seat-name"
-                    onMouseDown={e => { if (e.button === 0) onSeatDragStart(key, attIdx, e); }}
-                    title="Drag to reorder or move to another table">
-                    {nameOrder === 'firstLast' ? `${att[1]}, ${att[0]}` : `${att[0]}, ${att[1]}`}
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      onSeatDragStart(key);
+                    }}>
+                    {nameOrder === 'firstLast'
+                      ? `${attendees[attIdx]?.[1]}, ${attendees[attIdx]?.[0]}`
+                      : `${attendees[attIdx]?.[0]}, ${attendees[attIdx]?.[1]}`}
                   </span>
-                  <button className="seat-remove" onClick={() => onUnassign(key)} title="Remove from seat">✕</button>
+                  <button className="seat-remove" onClick={() => onUnassign(key)}>✕</button>
                 </>
               ) : (
                 <span className="seat-empty-label">
-                  {isDropTarget ? 'Drop here' : 'Empty'}
+                  {isDropTarget ? '— drop here —' : 'Empty'}
                 </span>
               )}
             </div>
@@ -1956,24 +1963,23 @@ function TablePopup({ entity, entityType, attendees, disabledAttendees, assigned
 }
 
 // === LIST VIEW ===
-function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees, selectedAttendee, search, collapsedCards, onSearchChange, onToggleCollapse, onExpandAll, onCollapseAll, onAssign, onUnassign, onRename, onChangeColor, onDelete, dragAttendee, onDropNextAvailable, onSelect, selectedItem, nameOrder }) {
-  const totalSeats = tables.reduce((s, t) => s + getTableTotalSeats(t), 0) + chairBlocks.reduce((s, b) => s + getBlockTotalSeats(b), 0);
-  const totalAssigned = assigned.size;
-  const unassigned = attendees.length - totalAssigned;
+function ListView({ tables, chairBlocks, attendees, assigned, disabledAttendees, selectedAttendee, search,
+  collapsedCards, onSearchChange, onToggleCollapse, onExpandAll, onCollapseAll,
+  onAssign, onUnassign, onRename, onChangeColor, onDelete, dragAttendee, onDropNextAvailable, onSelect, selectedItem, nameOrder }) {
   const term = search.toLowerCase();
+  const totalSeats = tables.reduce((s, t) => s + getTableTotalSeats(t), 0) + chairBlocks.reduce((s, b) => s + b.rows * b.cols, 0);
+  const totalAssigned = assigned.size;
 
   return (
     <div className="list-view">
       <div className="list-header">
-        <h2>Seating Breakdown</h2>
+        <h2>Seating List</h2>
         <span className="badge">{totalAssigned}/{totalSeats} seated</span>
-        {unassigned > 0 && <span className="warning">⚠ {unassigned} unassigned</span>}
       </div>
       <div className="list-controls">
-        <span className="search-icon">🔍</span>
-        <input type="text" placeholder="Filter tables..." value={search} onChange={e => onSearchChange(e.target.value)} style={{ width: 180 }} />
-        <button className="btn btn-sm" onClick={onExpandAll}>▼ Expand</button>
-        <button className="btn btn-sm" onClick={onCollapseAll}>▲ Collapse</button>
+        <input type="text" placeholder="Search tables..." value={search} onChange={e => onSearchChange(e.target.value)} style={{ width: 180 }} />
+        <button className="btn btn-sm" onClick={onExpandAll}>Expand All</button>
+        <button className="btn btn-sm" onClick={onCollapseAll}>Collapse All</button>
       </div>
       <div className="cards-grid">
         {tables.filter(t => !term || (t.name || `Table ${t.id}`).toLowerCase().includes(term)).map(t => (
@@ -2030,6 +2036,17 @@ function EntityCard({ entity, entityType, attendees, collapsed, onToggle, select
     onRename(entityType, entity.id, nameValue.trim());
   }
 
+  // Seat keys
+  let seatKeys = [];
+  if (entityType === 'table') {
+    const t = entity;
+    for (let i = 0; i < total; i++) seatKeys.push(i);
+  } else {
+    for (let r = 0; r < entity.rows; r++)
+      for (let c = 0; c < entity.cols; c++)
+        seatKeys.push(`${r}-${c}`);
+  }
+
   return (
     <div className={`entity-card ${isDragOver ? 'drag-over' : ''} ${isSelected ? 'selected' : ''}`}
       onMouseEnter={() => { if (dragAttendee !== null) setIsDragOver(true); }}
@@ -2043,92 +2060,61 @@ function EntityCard({ entity, entityType, attendees, collapsed, onToggle, select
       <div className="card-header" onClick={() => { onSelect(entityType, entity); onToggle(); }}>
         <span className="card-toggle">{collapsed ? '▶' : '▼'}</span>
         <span className={`card-color ${entityType !== 'table' || entity.tableType !== 'round' ? 'rect' : ''} ${showColorPicker ? 'editing' : ''}`}
-          style={{ background: entity.color, cursor: 'pointer' }}
-          onClick={e => { e.stopPropagation(); setShowColorPicker(!showColorPicker); }}
-          title="Change color" />
+          style={{ background: entity.color }}
+          onClick={e => { e.stopPropagation(); setShowColorPicker(!showColorPicker); }} />
         {editingName ? (
-          <input ref={nameInputRef} className="card-name-input"
-            value={nameValue}
+          <input className="card-name-input" ref={nameInputRef} value={nameValue}
             onChange={e => setNameValue(e.target.value)}
-            onBlur={commitName}
-            onKeyDown={e => { if (e.key === 'Enter') commitName(); if (e.key === 'Escape') setEditingName(false); }}
             onClick={e => e.stopPropagation()}
-            autoFocus />
+            onBlur={commitName}
+            onKeyDown={e => { if (e.key === 'Enter') commitName(); if (e.key === 'Escape') setEditingName(false); }} />
         ) : (
-          <span className="card-name" onDoubleClick={startEditing} title="Double-click to rename">{displayName}</span>
+          <span className="card-name" onDoubleClick={startEditing}>{displayName}</span>
         )}
         <span className={`card-badge ${badgeClass}`}>{filled}/{total}</span>
-        <button className="card-delete-btn" onClick={e => { e.stopPropagation(); onDelete(entityType, entity.id, displayName); }} title="Delete">✕</button>
+        <button className="card-delete-btn" onClick={e => { e.stopPropagation(); onDelete(entityType, entity.id, displayName); }}>✕</button>
       </div>
-      <div className="card-body-wrapper">
-        {showColorPicker && (
-          <div className="card-color-overlay" onClick={e => { e.stopPropagation(); setShowColorPicker(false); }}>
-            <div className="card-color-picker" onClick={e => e.stopPropagation()}>
-              {COLOR_PALETTE.map(c => (
-                <button key={c} className={`color-swatch ${entity.color === c ? 'active' : ''} ${c === '#FFFFFF' ? 'white-swatch' : ''}`}
-                  style={{ background: c }}
-                  onClick={() => { onChangeColor(entityType, entity.id, c); setShowColorPicker(false); }} />
-              ))}
-            </div>
-          </div>
-        )}
-        {!collapsed && (
-        <div className="card-seats">
-          {entityType === 'table' ? (
-            Array.from({ length: total }, (_, i) => (
-              <SeatRow key={i} seatIdx={i} seatKey={i}
-                entity={entity} entityType={entityType}
-                attendees={attendees} selectedAttendee={selectedAttendee}
-                assigned={assigned} disabledAttendees={disabledAttendees}
-                onAssign={onAssign} onUnassign={onUnassign}
-                dragAttendee={dragAttendee} nameOrder={nameOrder} />
-            ))
-          ) : (
-            Array.from({ length: entity.rows }, (_, r) => (
-              <div className="block-row" key={r}>
-                <span className="block-row-label">R{r + 1}</span>
-                {Array.from({ length: entity.cols }, (_, c) => {
-                  const key = `${r}-${c}`;
-                  const occ = key in entity.assignments;
-                  const attIdx = occ ? entity.assignments[key] : null;
-                  return (
-                    <span key={c}
-                      className={`block-seat ${occ ? 'filled' : 'empty'}`}
-                      onClick={() => {
-                        if (occ) onUnassign(entityType, entity.id, key);
-                        else if (selectedAttendee != null && !assigned.has(selectedAttendee) && !disabledAttendees.has(selectedAttendee))
-                          onAssign(entityType, entity.id, key, selectedAttendee);
-                      }}
-                      title={occ && attIdx < attendees.length ? (nameOrder === 'firstLast' ? `${attendees[attIdx][1]}, ${attendees[attIdx][0]}` : `${attendees[attIdx][0]}, ${attendees[attIdx][1]}`) : 'Empty — select an attendee and click'}>
-                      {occ && attIdx < attendees.length ? formatName(attendees[attIdx][1], attendees[attIdx][0], 'initials', nameOrder) : '—'}
-                    </span>
-                  );
-                })}
+      {!collapsed && (
+        <div className="card-body-wrapper">
+          {showColorPicker && (
+            <div className="card-color-overlay" onClick={() => setShowColorPicker(false)}>
+              <div className="card-color-picker" onClick={e => e.stopPropagation()}>
+                {COLOR_PALETTE.map(c => (
+                  <button key={c} className={`color-swatch ${c === entity.color ? 'active' : ''} ${c === '#FFFFFF' ? 'white-swatch' : ''}`}
+                    style={{ background: c }}
+                    onClick={() => { onChangeColor(entityType, entity.id, c); setShowColorPicker(false); }} />
+                ))}
               </div>
-            ))
+            </div>
           )}
+          <div className="card-seats">
+            {seatKeys.map((key, idx) => (
+              <SeatRow key={key} seatKey={key} seatIdx={idx} entity={entity} entityType={entityType}
+                attendees={attendees} selectedAttendee={selectedAttendee} assigned={assigned}
+                disabledAttendees={disabledAttendees} onAssign={onAssign} onUnassign={onUnassign}
+                dragAttendee={dragAttendee} nameOrder={nameOrder} />
+            ))}
+          </div>
         </div>
       )}
-      </div>
     </div>
   );
 }
 
-function SeatRow({ seatIdx, seatKey, entity, entityType, attendees, selectedAttendee, assigned, disabledAttendees, onAssign, onUnassign, dragAttendee, nameOrder }) {
-  const occ = seatKey in entity.assignments;
-  const attIdx = occ ? entity.assignments[seatKey] : null;
+function SeatRow({ seatKey, seatIdx, entity, entityType, attendees, selectedAttendee, assigned, disabledAttendees, onAssign, onUnassign, dragAttendee, nameOrder }) {
+  const attIdx = entity.assignments[seatKey];
+  const occ = attIdx !== undefined;
   const name = occ && attIdx < attendees.length
     ? (nameOrder === 'firstLast' ? `${attendees[attIdx][1]}, ${attendees[attIdx][0]}` : `${attendees[attIdx][0]}, ${attendees[attIdx][1]}`)
     : null;
   const [isDragOver, setIsDragOver] = useState(false);
 
   return (
-    <div className={`seat-row ${isDragOver && !occ ? 'drag-over' : ''}`}
+    <div className={`seat-row ${isDragOver ? 'drag-over' : ''}`}
       onMouseEnter={() => { if (dragAttendee !== null && !occ) setIsDragOver(true); }}
       onMouseLeave={() => setIsDragOver(false)}
-      onMouseUp={e => {
-        if (dragAttendee !== null && !occ) {
-          e.stopPropagation();
+      onMouseUp={() => {
+        if (dragAttendee !== null && isDragOver && !occ) {
           onAssign(entityType, entity.id, seatKey, dragAttendee);
           setIsDragOver(false);
         }
@@ -2204,7 +2190,6 @@ function Modal({ modal, onClose, onConfirmAdd, onConfirmEdit, onConfirmAddAttend
       <div className="modal-overlay" onClick={onClose}>
         <div className="modal" onClick={e => e.stopPropagation()} style={{ minWidth: 340 }}>
           <h3>Export Image</h3>
-
           <div className="modal-field">
             <label>Resolution</label>
             <div className="export-options">
@@ -2216,7 +2201,6 @@ function Modal({ modal, onClose, onConfirmAdd, onConfirmEdit, onConfirmAddAttend
               ))}
             </div>
           </div>
-
           <div className="modal-field">
             <label>Content</label>
             <div className="export-options">
@@ -2228,7 +2212,6 @@ function Modal({ modal, onClose, onConfirmAdd, onConfirmEdit, onConfirmAddAttend
               ))}
             </div>
           </div>
-
           <div className="modal-field">
             <label>Options</label>
             <label className="menu-toggle" style={{ padding: '4px 0' }}>
@@ -2240,7 +2223,6 @@ function Modal({ modal, onClose, onConfirmAdd, onConfirmEdit, onConfirmAddAttend
               Show seat names
             </label>
           </div>
-
           <div className="modal-actions">
             <button className="btn" onClick={onClose}>Cancel</button>
             <button className="btn btn-success" onClick={() => { onExport(params); onClose(); }}>Export PNG</button>
@@ -2260,83 +2242,54 @@ function Modal({ modal, onClose, onConfirmAdd, onConfirmEdit, onConfirmAddAttend
 
         {isAddAttendee ? (
           <>
-            <div className="modal-field">
-              <label>Last Name</label>
-              <input type="text" value={params.last} onChange={e => set('last', e.target.value)} autoFocus />
+            <div className="modal-row">
+              <div className="modal-field"><label>First Name</label><input type="text" value={params.first} onChange={e => set('first', e.target.value)} autoFocus /></div>
+              <div className="modal-field"><label>Last Name</label><input type="text" value={params.last} onChange={e => set('last', e.target.value)} /></div>
             </div>
-            <div className="modal-field">
-              <label>First Name</label>
-              <input type="text" value={params.first} onChange={e => set('first', e.target.value)} />
+            <div className="modal-actions">
+              <button className="btn" onClick={onClose}>Cancel</button>
+              <button className="btn btn-success" onClick={() => onConfirmAddAttendee(params)}>Add</button>
             </div>
           </>
         ) : (
           <>
-            <div className="modal-field">
-              <label>Name</label>
-              <input type="text" value={params.name || ''} onChange={e => set('name', e.target.value)} autoFocus />
-            </div>
+            <div className="modal-field"><label>Name</label><input type="text" value={params.name} onChange={e => set('name', e.target.value)} /></div>
 
-            {et === 'round_table' && (
+            {(et === 'round_table') && (
               <>
                 <div className="modal-row">
-                  <div className="modal-field">
-                    <label>Seats</label>
-                    <input type="number" value={params.seats} min={4} max={16} onChange={e => set('seats', e.target.value)} />
-                  </div>
-                  <div className="modal-field">
-                    <label>Diameter (ft)</label>
-                    <input type="number" value={params.diameter} min={3} max={12} step={0.5} onChange={e => set('diameter', e.target.value)} />
-                  </div>
+                  <div className="modal-field"><label>Seats</label><input type="number" value={params.seats} min={1} max={20} onChange={e => set('seats', e.target.value)} /></div>
+                  <div className="modal-field"><label>Diameter (ft)</label><input type="number" value={params.diameter} min={2} max={15} onChange={e => set('diameter', e.target.value)} /></div>
                 </div>
               </>
             )}
 
-            {et === 'rect_table' && (
+            {(et === 'rect_table') && (
               <>
                 <div className="modal-row">
-                  <div className="modal-field">
-                    <label>Length (ft)</label>
-                    <input type="number" value={params.length} min={3} max={20} step={0.5} onChange={e => set('length', e.target.value)} />
-                  </div>
-                  <div className="modal-field">
-                    <label>Width (ft)</label>
-                    <input type="number" value={params.width} min={2} max={10} step={0.5} onChange={e => set('width', e.target.value)} />
-                  </div>
+                  <div className="modal-field"><label>Length (ft)</label><input type="number" value={params.length} min={2} max={20} onChange={e => set('length', e.target.value)} /></div>
+                  <div className="modal-field"><label>Width (ft)</label><input type="number" value={params.width} min={1} max={10} onChange={e => set('width', e.target.value)} /></div>
                 </div>
-                <div className="modal-field">
-                  <label>Orientation</label>
+                <div className="modal-row">
+                  <div className="modal-field"><label>Seats per side</label><input type="number" value={params.seats} min={0} max={20} onChange={e => set('seats', e.target.value)} /></div>
+                  <div className="modal-field"><label>End seats per end</label><input type="number" value={params.endSeats} min={0} max={5} onChange={e => set('endSeats', e.target.value)} /></div>
+                </div>
+                <div className="modal-field"><label>Orientation</label>
                   <select value={params.orientation} onChange={e => set('orientation', e.target.value)}>
                     <option value="horizontal">Horizontal</option>
                     <option value="vertical">Vertical</option>
                   </select>
                 </div>
-                <div className="modal-row">
-                  <div className="modal-field">
-                    <label>Seats per side</label>
-                    <input type="number" value={params.seats} min={1} max={10} onChange={e => set('seats', e.target.value)} />
-                  </div>
-                  <div className="modal-field">
-                    <label>End seats</label>
-                    <input type="number" value={params.endSeats} min={0} max={3} onChange={e => set('endSeats', e.target.value)} />
-                  </div>
-                </div>
               </>
             )}
 
-            {et === 'chair_block' && (
+            {(et === 'chair_block') && (
               <>
                 <div className="modal-row">
-                  <div className="modal-field">
-                    <label>Rows</label>
-                    <input type="number" value={params.rows} min={1} max={20} onChange={e => set('rows', e.target.value)} />
-                  </div>
-                  <div className="modal-field">
-                    <label>Columns</label>
-                    <input type="number" value={params.cols} min={1} max={20} onChange={e => set('cols', e.target.value)} />
-                  </div>
+                  <div className="modal-field"><label>Rows</label><input type="number" value={params.rows} min={1} max={20} onChange={e => set('rows', e.target.value)} /></div>
+                  <div className="modal-field"><label>Columns</label><input type="number" value={params.cols} min={1} max={20} onChange={e => set('cols', e.target.value)} /></div>
                 </div>
-                <div className="modal-field">
-                  <label>Spacing</label>
+                <div className="modal-field"><label>Spacing</label>
                   <select value={params.spacing} onChange={e => set('spacing', e.target.value)}>
                     <option value="tight">Tight</option>
                     <option value="normal">Normal</option>
@@ -2346,16 +2299,10 @@ function Modal({ modal, onClose, onConfirmAdd, onConfirmEdit, onConfirmAddAttend
               </>
             )}
 
-            {!['round_table', 'rect_table', 'chair_block'].includes(et) && (
+            {(!['round_table', 'rect_table', 'chair_block'].includes(et)) && (
               <div className="modal-row">
-                <div className="modal-field">
-                  <label>Width (ft)</label>
-                  <input type="number" value={params.widthFt} min={2} max={50} onChange={e => set('widthFt', e.target.value)} />
-                </div>
-                <div className="modal-field">
-                  <label>Height (ft)</label>
-                  <input type="number" value={params.heightFt} min={2} max={50} onChange={e => set('heightFt', e.target.value)} />
-                </div>
+                <div className="modal-field"><label>Width (ft)</label><input type="number" value={params.widthFt} min={2} max={50} onChange={e => set('widthFt', e.target.value)} /></div>
+                <div className="modal-field"><label>Height (ft)</label><input type="number" value={params.heightFt} min={2} max={50} onChange={e => set('heightFt', e.target.value)} /></div>
               </div>
             )}
 
@@ -2363,25 +2310,21 @@ function Modal({ modal, onClose, onConfirmAdd, onConfirmEdit, onConfirmAddAttend
               <label>Color</label>
               <div className="color-palette">
                 {COLOR_PALETTE.map(c => (
-                  <button key={c} className={`color-swatch ${params.color === c ? 'active' : ''} ${c === '#FFFFFF' ? 'white-swatch' : ''}`}
+                  <button key={c} className={`color-swatch ${c === params.color ? 'active' : ''} ${c === '#FFFFFF' ? 'white-swatch' : ''}`}
                     style={{ background: c }}
                     onClick={() => set('color', c)} />
                 ))}
               </div>
             </div>
+
+            <div className="modal-actions">
+              <button className="btn" onClick={onClose}>Cancel</button>
+              <button className="btn btn-success" onClick={() => isEdit ? onConfirmEdit(et, entity, params) : onConfirmAdd(et, params)}>
+                {isEdit ? 'Save' : 'Add'}
+              </button>
+            </div>
           </>
         )}
-
-        <div className="modal-actions">
-          <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-accent" onClick={() => {
-            if (isAddAttendee) onConfirmAddAttendee(params);
-            else if (isAdd) onConfirmAdd(params);
-            else onConfirmEdit(params);
-          }}>
-            {isAdd || isAddAttendee ? 'Add' : 'Save'}
-          </button>
-        </div>
       </div>
     </div>
   );

@@ -146,6 +146,18 @@ export function serializeProject(state) {
     nextBlockId: state.nextBlockId,
     nextElementId: state.nextElementId,
     nextColorIdx: state.nextColorIdx,
+    floorplanData: state.floorplanData || null,
+    floorplanOpacity: state.floorplanOpacity ?? 0.3,
+    showFloorplan: state.showFloorplan ?? true,
+    floorplanFit: state.floorplanFit || 'stretch',
+    // Settings
+    showPlacement: state.showPlacement ?? true,
+    gridSize: state.gridSize ?? 1,
+    hideGrid: state.hideGrid ?? false,
+    snapEnabled: state.snapEnabled ?? true,
+    nameOrder: state.nameOrder || 'lastFirst',
+    smartGuidesEnabled: state.smartGuidesEnabled ?? true,
+    showSeatNumbers: state.showSeatNumbers ?? false,
   }, null, 2);
 }
 
@@ -163,6 +175,18 @@ export function deserializeProject(json) {
     nextBlockId: d.nextBlockId || 1,
     nextElementId: d.nextElementId || 1,
     nextColorIdx: d.nextColorIdx || 0,
+    floorplanData: d.floorplanData || null,
+    floorplanOpacity: d.floorplanOpacity ?? 0.3,
+    showFloorplan: d.showFloorplan ?? true,
+    floorplanFit: d.floorplanFit || 'stretch',
+    // Settings
+    showPlacement: d.showPlacement ?? true,
+    gridSize: d.gridSize ?? 1,
+    hideGrid: d.hideGrid ?? false,
+    snapEnabled: d.snapEnabled ?? true,
+    nameOrder: d.nameOrder || 'lastFirst',
+    smartGuidesEnabled: d.smartGuidesEnabled ?? true,
+    showSeatNumbers: d.showSeatNumbers ?? false,
   };
 }
 

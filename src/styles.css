@@ -50,7 +50,7 @@ body {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px; background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
-  flex-shrink: 0; z-index: 10;
+  flex-shrink: 0; z-index: 30;
 }
 .topbar-section { display: flex; align-items: center; gap: 6px; }
 .topbar-divider { width: 1px; height: 24px; background: var(--border); margin: 0 4px; }
@@ -270,6 +270,8 @@ input[type="color"] { width: 30px; height: 26px; padding: 1px; cursor: pointer; 
 }
 
 .card-seats { padding: 4px 12px 8px; }
+
+/* Seat rows */
 .seat-row {
   display: flex; align-items: center; gap: 6px;
   padding: 3px 0; font-size: 12px;
@@ -389,6 +391,55 @@ input[type="color"] { width: 30px; height: 26px; padding: 1px; cursor: pointer; 
   cursor: pointer; transition: background 0.1s;
 }
 .menu-toggle:hover { background: rgba(255,255,255,0.05); }
+
+/* Menu slider (for floorplan opacity) */
+.menu-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.menu-slider-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 46px;
+}
+.menu-slider-value {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 28px;
+  text-align: right;
+}
+.menu-slider input[type="range"] {
+  flex: 1;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.menu-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: none;
+}
+.menu-slider input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: none;
+}
 
 /* View toggle — segmented pill */
 .view-toggle {
